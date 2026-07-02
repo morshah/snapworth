@@ -20,3 +20,13 @@ class ProductIntelligenceReport(BaseModel):
     images: List[str]
     pdf_links: List[str]
     video_links: List[str]
+
+
+class UserCredentials(BaseModel):
+    username: str
+    password: str
+
+
+class Token(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

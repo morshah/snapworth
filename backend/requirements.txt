@@ -8,3 +8,6 @@ httpx==0.28.1
 beautifulsoup4==4.15.0
 python-dotenv==1.2.2
 anthropic==0.115.1
+# Authentication (JWT + password hashing)
+PyJWT==2.13.0
+bcrypt==5.0.0

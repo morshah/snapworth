@@ -3,14 +3,18 @@ import os
 import shutil
 import uuid
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
+import auth
 import config
 import services
 from models import ProductIntelligenceReport
 
 app = FastAPI(title="Product Sourcing Intelligence Agent")
+
+# Auth routes: POST /register and POST /login (issue JWTs).
+app.include_router(auth.router)
 
 # Allow the Next.js dev server (http://localhost:3000) to call this API from
 # the browser. Without this, cross-origin fetches fail with "Failed to fetch".
@@ -26,10 +30,14 @@ app.add_middleware(
 
 
 @app.post("/upload-image", response_model=ProductIntelligenceReport)
-async def upload_image(file: UploadFile = File(...)):
+async def upload_image(
+    file: UploadFile = File(...),
+    user: str = Depends(auth.get_current_user),
+):
     """Upload an image → reverse image search → scrape listings → AI report.
 
-    Requires SERPAPI_API_KEY, IMGBB_API_KEY, and ANTHROPIC_API_KEY (see
+    Protected: requires a valid Bearer JWT (obtain one via /login). Requires
+    SERPAPI_API_KEY, IMGBB_API_KEY, and ANTHROPIC_API_KEY (see
     backend/.env.example). Missing keys return a 503 naming the variable.
     """
     # 1. Save the uploaded image to a unique temp path.

@@ -20,6 +20,9 @@ __pycache__/
 # Temporary files created by the application
 /tmp/
 
+# SQLite auth database (contains user credentials — never commit)
+*.db
+
 # Next.js / Node.js
 node_modules/
 # Next.js build output

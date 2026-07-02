@@ -9,6 +9,15 @@ from dotenv import load_dotenv
 
 load_dotenv()  # loads backend/.env if present; real env vars take precedence
 
+# Authentication — HS256 JWT signing. Generate a secret with:
+#   python -c "import secrets; print(secrets.token_hex(32))"
+JWT_SECRET = os.getenv("JWT_SECRET")
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
+AUTH_DB_PATH = os.getenv(
+    "AUTH_DB_PATH", os.path.join(os.path.dirname(__file__), "auth.db")
+)
+
 # Reverse image search — SerpApi (Google Lens engine). https://serpapi.com
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 

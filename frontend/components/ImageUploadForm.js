@@ -1,12 +1,35 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import AuthForm from './AuthForm';
 
 const API_BASE_URL = 'http://127.0.0.1:8000'; // Replace with your backend URL
+const TOKEN_KEY = 'psa_token';
 
 function ImageUploadForm() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [error, setError] = useState(null);
+  const [authToken, setAuthToken] = useState(null);
+  const [authReady, setAuthReady] = useState(false); // avoids SSR/first-paint flash
+
+  // localStorage is browser-only — read it after mount.
+  useEffect(() => {
+    setAuthToken(localStorage.getItem(TOKEN_KEY));
+    setAuthReady(true);
+  }, []);
+
+  const handleAuth = (token) => {
+    localStorage.setItem(TOKEN_KEY, token);
+    setAuthToken(token);
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem(TOKEN_KEY);
+    setAuthToken(null);
+    setSelectedFile(null);
+    setReportData(null);
+    setError(null);
+  };
 
   const handleFileChange = (event) => {
     setSelectedFile(event.target.files[0]);
@@ -31,8 +54,16 @@ function ImageUploadForm() {
       const response = await fetch(`${API_BASE_URL}/upload-image`, {
         method: 'POST',
         body: formData,
-        // When using FormData, Content-Type header is usually set automatically
+        // FormData sets Content-Type automatically; we only add auth.
+        headers: { Authorization: `Bearer ${authToken}` },
       });
+
+      // Token rejected/expired — send the user back to the login screen.
+      if (response.status === 401) {
+        handleLogout();
+        setError('Your session expired. Please sign in again.');
+        return;
+      }
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -49,6 +80,8 @@ function ImageUploadForm() {
     }
   };
 
+  if (!authReady) return null;
+
   return (
     <div className="page">
       <header className="app-header">
@@ -56,7 +89,14 @@ function ImageUploadForm() {
         <p>Upload a product photo to find matching listings and generate an AI report.</p>
       </header>
 
+      {!authToken ? (
+        <AuthForm onAuth={handleAuth} />
+      ) : (
       <div className="card">
+        <div className="account-bar">
+          <span>🔒 Signed in</span>
+          <button className="link-btn" onClick={handleLogout}>Log out</button>
+        </div>
         <div className="uploader">
           <label className="dropzone">
             <input type="file" accept="image/*" onChange={handleFileChange} />
@@ -161,6 +201,7 @@ function ImageUploadForm() {
           </div>
         )}
       </div>
+      )}
     </div>
   );
 }
