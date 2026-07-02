@@ -13,9 +13,9 @@ import admin
 import auth
 import config
 import db
+import pipeline
 import ratelimit
-import services
-from models import ProductIntelligenceReport, ReportListItem, StoredReport
+from models import FoundSite, MergedReport, ReportGridItem, ReportStatus, SiteResult
 
 # Schema is managed by Alembic — run `alembic upgrade head` (see README).
 app = FastAPI(title="Product Sourcing Intelligence Agent")
@@ -28,8 +28,6 @@ app.add_exception_handler(RateLimitExceeded, ratelimit.rate_limit_handler)
 app.include_router(auth.router)
 app.include_router(admin.router)
 
-# Allow the Next.js dev server (http://localhost:3000) to call this API from
-# the browser. Without this, cross-origin fetches fail with "Failed to fetch".
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -41,8 +39,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Keep references to spawned background jobs so they aren't garbage-collected.
+_jobs: set[asyncio.Task] = set()
 
-@app.post("/upload-image", response_model=ProductIntelligenceReport)
+
+@app.post("/upload-image")
 @ratelimit.limiter.limit(config.UPLOAD_RATE_LIMIT, key_func=ratelimit.user_or_ip)
 async def upload_image(
     request: Request,
@@ -50,122 +51,77 @@ async def upload_image(
     user: db.User = Depends(auth.get_current_user),
     session: AsyncSession = Depends(db.get_session),
 ):
-    """Upload an image → reverse image search → scrape listings → AI report.
+    """Start a sourcing job and return its id immediately.
 
-    Protected: requires a valid Bearer JWT (obtain one via /login). The report
-    is persisted to the user's history. Requires SERPAPI_API_KEY, IMGBB_API_KEY,
-    and ANTHROPIC_API_KEY (see backend/.env.example).
+    The pipeline runs in the background (pipeline.run) and writes progress to the
+    DB; the client polls GET /reports/{id} to render each step as it completes.
     """
-    # 1. Save the uploaded image to a unique temp path.
-    file_extension = os.path.splitext(file.filename)[1]
+    # Persist the upload to a temp path the background job will read then delete.
+    file_extension = os.path.splitext(file.filename or "")[1]
     temp_image_path = f"/tmp/{uuid.uuid4().hex}{file_extension}"
+    with open(temp_image_path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    try:
-        with open(temp_image_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    report = db.Report(user_id=user.id, status="processing")
+    session.add(report)
+    await session.commit()
+    await session.refresh(report)
 
-        # 2. Reverse image search for matching product listings.
-        listings = await services.reverse_image_search(temp_image_path)
-        print(f"Found {len(listings)} matching listings")
+    task = asyncio.create_task(pipeline.run(report.id, temp_image_path))
+    _jobs.add(task)
+    task.add_done_callback(_jobs.discard)
 
-        # 3. Business rule: fewer than 3 matches → soft error.
-        if len(listings) < 3:
-            raise HTTPException(
-                status_code=400,
-                detail="Less than 3 product matches found. Please try again with a clearer photo.",
-            )
-
-        top_listings = listings[: config.MAX_LISTINGS]
-
-        # 4. Scrape the top listings in parallel (best-effort).
-        scraped = await asyncio.gather(
-            *(services.scrape_listing(item["link"]) for item in top_listings if item.get("link"))
-        )
-
-        # 5. Aggregate images (thumbnails from search + scraped og:images), capped.
-        all_images: list[str] = []
-        for item in top_listings:
-            if item.get("thumbnail") and len(all_images) < config.MAX_IMAGES:
-                all_images.append(item["thumbnail"])
-        for result in scraped:
-            for img_url in result.get("images", []):
-                if len(all_images) < config.MAX_IMAGES:
-                    all_images.append(img_url)
-
-        all_pdf_links: list[str] = []
-        all_video_links: list[str] = []
-        for result in scraped:
-            all_pdf_links.extend(result.get("pdf_links", []))
-            all_video_links.extend(result.get("video_links", []))
-
-        # 6. Synthesize the report with Claude.
-        ai_report = await services.generate_ai_report(top_listings, list(scraped))
-
-        result = ProductIntelligenceReport(
-            report=ai_report,
-            images=all_images,
-            pdf_links=list(dict.fromkeys(all_pdf_links)),
-            video_links=list(dict.fromkeys(all_video_links)),
-        )
-
-        # 7. Persist to the user's history. A storage hiccup shouldn't lose the
-        #    (expensive) report the user just paid for, so log and continue.
-        try:
-            session.add(
-                db.Report(
-                    user_id=user.id,
-                    preview_image_url=all_images[0] if all_images else None,
-                    listings=top_listings,
-                    report=result.model_dump(),
-                )
-            )
-            await session.commit()
-        except Exception as exc:  # noqa: BLE001
-            await session.rollback()
-            print(f"Failed to save report for user {user.username}: {exc}")
-
-        return result
-
-    finally:
-        if os.path.exists(temp_image_path):
-            os.remove(temp_image_path)
+    return {"id": report.id, "status": report.status}
 
 
-@app.get("/reports", response_model=list[ReportListItem])
+def _to_status(report: db.Report) -> ReportStatus:
+    return ReportStatus(
+        id=report.id,
+        status=report.status,
+        image_url=report.image_url,
+        error=report.error,
+        created_at=report.created_at,
+        started_at=report.started_at,
+        finished_at=report.finished_at,
+        found_sites=[FoundSite(**s) for s in (report.listings or [])],
+        sites=[SiteResult(**s) for s in (report.sites or [])],
+        report=MergedReport(**report.report) if report.report else None,
+    )
+
+
+@app.get("/reports", response_model=list[ReportGridItem])
 async def list_reports(
     user: db.User = Depends(auth.get_current_user),
     session: AsyncSession = Depends(db.get_session),
 ):
-    """List the current user's saved reports, newest first."""
+    """Grid of the current user's uploads, newest first."""
     rows = await session.scalars(
         select(db.Report)
         .where(db.Report.user_id == user.id)
         .order_by(db.Report.created_at.desc())
     )
     return [
-        ReportListItem(
+        ReportGridItem(
             id=r.id,
+            status=r.status,
+            image_url=r.image_url,
             created_at=r.created_at,
-            preview_image_url=r.preview_image_url,
-            summary=r.report.get("report", {}).get("summary", ""),
+            started_at=r.started_at,
+            finished_at=r.finished_at,
+            summary=(r.report or {}).get("summary") if r.report else None,
         )
         for r in rows
     ]
 
 
-@app.get("/reports/{report_id}", response_model=StoredReport)
+@app.get("/reports/{report_id}", response_model=ReportStatus)
 async def get_report(
     report_id: int,
     user: db.User = Depends(auth.get_current_user),
     session: AsyncSession = Depends(db.get_session),
 ):
-    """Fetch one saved report (must belong to the current user)."""
+    """Live status of one job (must belong to the current user)."""
     report = await session.get(db.Report, report_id)
     if report is None or report.user_id != user.id:
         raise HTTPException(status_code=404, detail="Report not found.")
-    return StoredReport(
-        id=report.id,
-        created_at=report.created_at,
-        preview_image_url=report.preview_image_url,
-        report=ProductIntelligenceReport(**report.report),
-    )
+    return _to_status(report)

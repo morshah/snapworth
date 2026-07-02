@@ -1,197 +1,126 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
+import { useNow, elapsed, formatDuration } from '../lib/time';
+import { isActive, STATUS_LABEL } from '../lib/status';
+import ProductDetail from './ProductDetail';
 
-// The core tool: upload → report → history. Auth is handled by the parent;
-// on a 401 we call onAuthError so the app returns to the login screen.
 function SourcingView({ onAuthError }) {
+  const [products, setProducts] = useState([]);
+  const [selectedId, setSelectedId] = useState(null);
   const [selectedFile, setSelectedFile] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [reportData, setReportData] = useState(null);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
-  const [history, setHistory] = useState([]);
+  const now = useNow();
+  const pollRef = useRef(null);
+
+  const loadGrid = async () => {
+    const { ok, status, data } = await api('/reports');
+    if (status === 401) return onAuthError();
+    if (ok) setProducts(data);
+  };
 
   useEffect(() => {
-    fetchHistory();
+    loadGrid();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const fetchHistory = async () => {
-    const { ok, data } = await api('/reports');
-    if (ok) setHistory(data);
-  };
-
-  const viewReport = async (id) => {
-    const { ok, data } = await api(`/reports/${id}`);
-    if (ok) {
-      setReportData(data.report);
-      setError(null);
+  // Poll the grid while any product is still processing (keeps timers/status fresh).
+  useEffect(() => {
+    const anyActive = products.some((p) => isActive(p.status));
+    if (anyActive && !pollRef.current) {
+      pollRef.current = setInterval(loadGrid, 3000);
+    } else if (!anyActive && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
     }
-  };
-
-  const handleFileChange = (event) => {
-    setSelectedFile(event.target.files[0]);
-    setReportData(null);
-    setError(null);
-  };
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products]);
 
   const handleUpload = async () => {
-    if (!selectedFile) {
-      setError('Please select an image to upload.');
-      return;
-    }
-    setLoading(true);
+    if (!selectedFile) return;
+    setUploading(true);
     setError(null);
-    setReportData(null);
-
     const form = new FormData();
     form.append('file', selectedFile);
     const { ok, status, data } = await api('/upload-image', { method: 'POST', form });
-    setLoading(false);
-
-    if (status === 401) {
-      onAuthError();
-      return;
-    }
+    setUploading(false);
+    if (status === 401) return onAuthError();
     if (ok) {
-      setReportData(data);
-      fetchHistory();
+      setSelectedFile(null);
+      await loadGrid();
+      setSelectedId(data.id); // jump straight into the live progress view
     } else {
-      setError((data && data.detail) || 'Failed to generate report. Please try again.');
+      setError((data && data.detail) || 'Upload failed. Please try again.');
     }
   };
+
+  if (selectedId != null) {
+    return (
+      <ProductDetail
+        id={selectedId}
+        onBack={() => { setSelectedId(null); loadGrid(); }}
+        onAuthError={onAuthError}
+      />
+    );
+  }
 
   return (
     <>
       <div className="uploader">
         <label className="dropzone">
-          <input type="file" accept="image/*" onChange={handleFileChange} />
+          <input type="file" accept="image/*" onChange={(e) => setSelectedFile(e.target.files[0])} />
           <span className="dropzone-icon">📷</span>
           <span className="dropzone-title">Click to choose an image</span>
           <span className="dropzone-hint">PNG, JPG or JPEG</span>
         </label>
-
         {selectedFile && <span className="file-chip">📎 {selectedFile.name}</span>}
-
-        <button className="btn" onClick={handleUpload} disabled={loading || !selectedFile}>
-          {loading ? (
-            <>
-              <span className="spinner" /> Processing…
-            </>
-          ) : (
-            'Upload & Get Report'
-          )}
+        <button className="btn" onClick={handleUpload} disabled={uploading || !selectedFile}>
+          {uploading ? (<><span className="spinner" /> Starting…</>) : 'Upload & Get Report'}
         </button>
       </div>
 
       {error && (
-        <div className="alert">
-          <span>⚠️</span>
-          <span><strong>Error:</strong> {error}</span>
-        </div>
+        <div className="alert"><span>⚠️</span><span><strong>Error:</strong> {error}</span></div>
       )}
 
-      {reportData && (
-        <div className="report">
-          <h2>Product Intelligence Report</h2>
-
-          <div className="section">
-            <div className="section-title">Summary</div>
-            <p>{reportData.report.summary}</p>
-          </div>
-
-          <div className="section">
-            <div className="section-title">Features</div>
-            <ul className="feature-list">
-              {reportData.report.features_list.map((feature, index) => (
-                <li key={index}>{feature}</li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="section">
-            <div className="section-title">Specifications</div>
-            <pre className="specs">{JSON.stringify(reportData.report.specs, null, 2)}</pre>
-          </div>
-
-          <div className="section">
-            <div className="section-title">Pricing</div>
-            <p>{reportData.report.pricing_summary}</p>
-          </div>
-
-          <div className="section">
-            <div className="section-title">Recommendation</div>
-            <p>{reportData.report.recommendation_sentiment}</p>
-          </div>
-
-          <div className="section">
-            <div className="section-title">
-              Images <span className="badge">{reportData.images.length}</span>
-            </div>
-            <div className="image-grid">
-              {reportData.images.map((imgUrl, index) => (
-                <figure key={index}>
-                  <img
-                    src={imgUrl}
-                    alt={`Product ${index + 1}`}
-                    onError={(e) => {
-                      e.target.onerror = null;
-                      e.target.src = '/placeholder-image.png';
-                      e.target.alt = 'Image failed to load';
-                    }}
-                  />
-                </figure>
-              ))}
-            </div>
-          </div>
-
-          {(reportData.pdf_links.length > 0 || reportData.video_links.length > 0) && (
-            <div className="section">
-              <div className="section-title">Additional Resources</div>
-              <ul className="resource-links">
-                {reportData.pdf_links.map((link, index) => (
-                  <li key={`pdf-${index}`}>
-                    📄 <a href={link} target="_blank" rel="noopener noreferrer">{link}</a>
-                  </li>
-                ))}
-                {reportData.video_links.map((link, index) => (
-                  <li key={`video-${index}`}>
-                    🎬 <a href={link} target="_blank" rel="noopener noreferrer">{link}</a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </div>
-      )}
-
-      {history.length > 0 && (
-        <div className="section history">
-          <div className="section-title">Recent reports</div>
-          <ul className="history-list">
-            {history.map((item) => (
-              <li key={item.id}>
-                <button className="history-item" onClick={() => viewReport(item.id)}>
-                  {item.preview_image_url ? (
-                    <img
-                      src={item.preview_image_url}
-                      alt=""
-                      onError={(e) => { e.target.style.visibility = 'hidden'; }}
-                    />
-                  ) : (
-                    <span className="history-thumb">🔍</span>
-                  )}
-                  <span className="history-text">
-                    <span className="history-summary">{item.summary || 'Untitled report'}</span>
-                    <span className="history-date">
-                      {new Date(item.created_at).toLocaleString()}
+      <div className="section">
+        <div className="section-title">Your products</div>
+        {products.length === 0 ? (
+          <p className="muted">No products yet — upload an image to get started.</p>
+        ) : (
+          <div className="product-grid">
+            {products.map((p) => {
+              const active = isActive(p.status);
+              return (
+                <button key={p.id} className="product-card" onClick={() => setSelectedId(p.id)}>
+                  <div className="product-thumb">
+                    {p.image_url ? (
+                      <img src={p.image_url} alt="" onError={(e) => { e.target.style.visibility = 'hidden'; }} />
+                    ) : (
+                      <span className="history-thumb">🖼️</span>
+                    )}
+                    {active && <span className="product-timer">⏱ {formatDuration(elapsed(p.started_at || p.created_at, null, now))}</span>}
+                  </div>
+                  <div className="product-meta">
+                    <span className={`status ${p.status === 'done' ? 'ok' : p.status === 'error' ? 'muted' : 'pending'}`}>
+                      {STATUS_LABEL[p.status] || p.status}
                     </span>
-                  </span>
+                    <span className="product-summary">
+                      {p.status === 'done' ? (p.summary || 'View report') : p.status === 'error' ? 'Failed — tap for details' : 'In progress…'}
+                    </span>
+                  </div>
                 </button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+              );
+            })}
+          </div>
+        )}
+      </div>
     </>
   );
 }

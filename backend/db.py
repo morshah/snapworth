@@ -10,7 +10,7 @@ type variant, so the same models work on both.
 from datetime import datetime
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
 
-from sqlalchemy import JSON, ForeignKey, false, func
+from sqlalchemy import JSON, ForeignKey, false, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -78,15 +78,24 @@ class Invitation(Base):
 
 
 class Report(Base):
+    """A sourcing job. Rows are created immediately on upload and updated
+    progressively by the background pipeline (see pipeline.py), so the frontend
+    can poll and render each step as it completes."""
     __tablename__ = "reports"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    # First matched thumbnail — a lightweight preview for the history list.
-    preview_image_url: Mapped[str | None]
-    listings: Mapped[list] = mapped_column(JSONType)  # raw SerpApi matches
-    report: Mapped[dict] = mapped_column(JSONType)     # ProductIntelligenceReport
+    # Lifecycle: processing → searching → scraping → summarizing → done | error
+    status: Mapped[str] = mapped_column(server_default=text("'processing'"))
+    image_url: Mapped[str | None]  # the uploaded image, hosted (imgbb)
+    preview_image_url: Mapped[str | None]  # kept for the grid thumbnail
+    listings: Mapped[list | None] = mapped_column(JSONType)  # all sites found
+    sites: Mapped[list | None] = mapped_column(JSONType)     # per-site visited results
+    report: Mapped[dict | None] = mapped_column(JSONType)    # final merged report
+    error: Mapped[str | None]
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
+    started_at: Mapped[datetime | None]
+    finished_at: Mapped[datetime | None]
 
 
 async def get_session() -> AsyncSession:

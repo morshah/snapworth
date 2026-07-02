@@ -9,19 +9,63 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 
-class AIReport(BaseModel):
+class MergedReport(BaseModel):
+    """The final product report, merged across all visited sites."""
     summary: str
-    features_list: List[str]
-    specs: Dict[str, Any]
+    features: List[str]
+    specifications: Dict[str, Any]
     pricing_summary: str
-    recommendation_sentiment: str
+    recommendation: str
 
 
-class ProductIntelligenceReport(BaseModel):
-    report: AIReport
-    images: List[str]
-    pdf_links: List[str]
-    video_links: List[str]
+class FoundSite(BaseModel):
+    """One site returned by the reverse image search (before visiting)."""
+    title: Optional[str] = None
+    source: Optional[str] = None
+    link: Optional[str] = None
+    thumbnail: Optional[str] = None
+    price: Optional[str] = None
+
+
+class SiteResult(BaseModel):
+    """A visited site, with what was found + a per-site AI summary."""
+    index: int
+    title: Optional[str] = None
+    source: Optional[str] = None
+    link: Optional[str] = None
+    thumbnail: Optional[str] = None
+    status: str = "pending"  # pending | visiting | done | failed
+    summary: Optional[str] = None
+    price: Optional[str] = None
+    description: Optional[str] = None
+    image: Optional[str] = None
+    started_at: Optional[str] = None   # ISO strings (stored inside JSON)
+    finished_at: Optional[str] = None
+
+
+class ReportStatus(BaseModel):
+    """Full live state of a sourcing job — the polling payload."""
+    id: int
+    status: str
+    image_url: Optional[str] = None
+    error: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    found_sites: List[FoundSite] = []
+    sites: List[SiteResult] = []
+    report: Optional[MergedReport] = None
+
+
+class ReportGridItem(BaseModel):
+    """One card in the products grid."""
+    id: int
+    status: str
+    image_url: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+    summary: Optional[str] = None
 
 
 class UserCredentials(BaseModel):
@@ -77,19 +121,3 @@ class InviteInfo(BaseModel):
     """Public-facing invite validity check for the accept page."""
     valid: bool
     email: Optional[str] = None
-
-
-class ReportListItem(BaseModel):
-    """One row in a user's saved-report history."""
-    id: int
-    created_at: datetime
-    preview_image_url: Optional[str] = None
-    summary: str
-
-
-class StoredReport(BaseModel):
-    """A full saved report retrieved from history."""
-    id: int
-    created_at: datetime
-    preview_image_url: Optional[str] = None
-    report: ProductIntelligenceReport

@@ -41,9 +41,10 @@ IMGBB_API_KEY = os.getenv("IMGBB_API_KEY")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
 
-# Tunables
-MAX_LISTINGS = int(os.getenv("MAX_LISTINGS", "5"))
-MAX_IMAGES = int(os.getenv("MAX_IMAGES", "12"))
+# Tunables (pipeline thresholds)
+MAX_FOUND_SITES = int(os.getenv("MAX_FOUND_SITES", "30"))   # sites recorded from search
+MAX_LISTINGS = int(os.getenv("MAX_LISTINGS", "5"))          # sites actually visited/scraped
+MAX_IMAGES = int(os.getenv("MAX_IMAGES", "12"))             # images aggregated into a report
 SCRAPE_TIMEOUT_SECONDS = float(os.getenv("SCRAPE_TIMEOUT_SECONDS", "8"))
 
 # Rate limiting (slowapi). Storage defaults to in-memory (per-process); set a

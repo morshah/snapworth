@@ -30,18 +30,25 @@ Everything built so far:
 
 ### Core Pipeline
 * **Image upload** — accepts a multipart/form-data image file.
-* **Image hosting (imgbb)** — uploads the image to get a public URL (required because Google Lens fetches the image by URL).
+* **Image hosting (imgbb)** — uploads the image to get a public URL (required because Google Lens fetches the image by URL); this is also stored as the product's uploaded image.
 * **Reverse image search (SerpApi / Google Lens)** — finds matching product listings, with real product titles, sources, prices, and thumbnails.
-* **Parallel web scraping (httpx + BeautifulSoup)** — best-effort scrape of the top listings for extra detail (description, price, og:image, PDF links); degrades gracefully when a site blocks scraping.
-* **AI report generation (Anthropic Claude)** — synthesizes the gathered data into a structured, unbiased report using `claude-opus-4-8`.
-* **Structured output** — returns a JSON object: `report` (summary, features list, specs, pricing summary, recommendation), aggregated `images`, and `pdf_links` / `video_links`.
-* **Soft error handling** — if fewer than 3 matches are found, returns a `400` asking for a clearer photo.
+* **Web scraping (httpx + BeautifulSoup)** — best-effort scrape of each visited listing for detail (description, price, image); degrades gracefully when a site blocks scraping.
+* **Per-site AI summaries** — a Claude call summarizes each visited listing as it's processed.
+* **Merged AI report (Anthropic Claude)** — merges all sites into one report: `summary`, `features`, `specifications`, `pricing_summary`, `recommendation`.
+* **Configurable thresholds** — number of sites to record/visit, images to fetch, and scrape timeout are all set in `.env`.
+* **Soft error handling** — if fewer than 3 matches are found, the job ends with a friendly error.
+
+### Live Progress (async processing)
+* **Instant start** — uploading kicks off a background job and returns immediately; the UI shows each step as it completes rather than waiting for the whole pipeline.
+* **Step-by-step results** — see the list of all sites found, then each site as it's visited (with what was found + its AI summary), then the final merged report.
+* **Live timers** — an overall timer and a per-site timer show elapsed time; the current site expands while older ones collapse to a one-line origin.
+* **Survives navigation** — all progress is stored server-side, so leaving the page and coming back (or refreshing) resumes exactly where it is, timers included.
+* **Products grid** — a grid of all your uploads, each with its status and a live timer for in-progress ones; click any product to open its progress/report.
 
 ### Persistence & History
-* **Report persistence** — every completed search is saved to the database (PostgreSQL/SQLite via SQLAlchemy; report payload stored as JSONB on Postgres).
-* **Report history** — `GET /reports` lists a user's past reports (newest first); `GET /reports/{id}` returns a full saved report (ownership-checked).
-* **History UI** — a "Recent reports" panel lists past searches with thumbnails; click one to re-view it instantly without re-running the (paid) pipeline.
-* **Versioned schema migrations (Alembic)** — database schema changes are tracked as migration files, applied with `alembic upgrade head` (no manual SQL).
+* **Everything is saved** — the uploaded image, all sites found, each visited site's data + summary, and the final merged report are persisted (PostgreSQL/SQLite via SQLAlchemy; JSONB on Postgres).
+* **Endpoints** — `GET /reports` (grid list), `GET /reports/{id}` (full live state, ownership-checked). Past products re-open instantly without re-running the (paid) pipeline.
+* **Versioned schema migrations (Alembic)** — schema changes are tracked as migration files, applied with `alembic upgrade head` (no manual SQL).
 
 ## External APIs & Keys
 
@@ -110,6 +117,10 @@ Edit `backend/.env`:
 | `UPLOAD_RATE_LIMIT` | no | Defaults to `10/hour` (per user) |
 | `RATE_LIMIT_STORAGE_URI` | no | In-memory by default; set e.g. `redis://…` for multi-instance |
 | `INVITE_EXPIRE_DAYS` | no | Invite link lifetime; defaults to `7` |
+| `MAX_FOUND_SITES` | no | Sites recorded from search; defaults to `30` |
+| `MAX_LISTINGS` | no | Sites actually visited & scraped; defaults to `5` |
+| `MAX_IMAGES` | no | Images aggregated per report; defaults to `12` |
+| `SCRAPE_TIMEOUT_SECONDS` | no | Per-site scrape timeout; defaults to `8` |
 
 Apply the database schema, create your first admin, then run the server:
 ```bash
@@ -165,4 +176,5 @@ Frontend serves `http://localhost:3000`.
 ## Notes & Roadmap
 
 * **Production hardening:** set `COOKIE_SECURE=true` (requires HTTPS). The `SameSite=Lax` cookie mitigates CSRF for same-site use; a cross-site production frontend would need CSRF tokens. Rate-limit storage is in-memory — use `RATE_LIMIT_STORAGE_URI` (Redis) if you run more than one backend instance.
+* **Background jobs run in-process:** if the backend restarts mid-job, that report stays at its last-saved step. Fine for single-instance dev/MVP; a production version would move processing to a durable queue (Celery/RQ/Arq) and fail orphaned jobs on startup.
 * `.env` and the SQLite DB (`*.db`) are gitignored; never commit real keys.

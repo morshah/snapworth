@@ -1,9 +1,9 @@
 """Real integrations for the product-sourcing pipeline.
 
-Each function replaces one of the former mocks in main.py:
-  - host_image / reverse_image_search  →  SerpApi Google Lens (+ imgbb hosting)
+External integrations used by the background pipeline:
+  - host_image / serpapi_lens          →  imgbb hosting + SerpApi Google Lens
   - scrape_listing                     →  httpx + BeautifulSoup (best-effort)
-  - generate_ai_report                 →  Anthropic Claude
+  - summarize_site / generate_ai_report →  Anthropic Claude (per-site + merged)
 
 Missing API keys raise HTTPException(503) with a message naming the env var,
 so the app runs and tells the operator exactly what to configure.
@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 from fastapi import HTTPException
 
 import config
-from models import AIReport
+from models import MergedReport
 
 SERPAPI_URL = "https://serpapi.com/search.json"
 IMGBB_URL = "https://api.imgbb.com/1/upload"
@@ -49,14 +49,13 @@ async def host_image(image_path: str) -> str:
     return resp.json()["data"]["url"]
 
 
-async def reverse_image_search(image_path: str) -> List[Dict[str, Any]]:
-    """Find product listings matching the image via SerpApi Google Lens.
+async def serpapi_lens(public_url: str) -> List[Dict[str, Any]]:
+    """Find product listings matching an already-hosted image via Google Lens.
 
     Returns a normalized list of listing dicts. Real image URLs (thumbnails)
     come straight from Google, so they render in the UI.
     """
     api_key = _require(config.SERPAPI_API_KEY, "SERPAPI_API_KEY")
-    public_url = await host_image(image_path)
 
     params = {
         "engine": "google_lens",
@@ -122,40 +121,60 @@ async def scrape_listing(url: str) -> Dict[str, Any]:
     return result
 
 
-async def generate_ai_report(
-    listings: List[Dict[str, Any]], scraped: List[Dict[str, Any]]
-) -> AIReport:
-    """Synthesize the gathered data into a structured report using Claude."""
+async def _claude_text(system: str, user: str, max_tokens: int) -> str:
     api_key = _require(config.ANTHROPIC_API_KEY, "ANTHROPIC_API_KEY")
     client = AsyncAnthropic(api_key=api_key)
-
-    payload = json.dumps({"listings": listings, "scraped_details": scraped}, default=str)[:100_000]
-    system = (
-        "You are a product-sourcing intelligence analyst. You are given scraped data for a single "
-        "product found across multiple online retailers. Synthesize one unbiased intelligence report.\n"
-        "Respond with ONLY a JSON object (no markdown, no code fences) with exactly these keys:\n"
-        '  "summary": string,\n'
-        '  "features_list": array of strings,\n'
-        '  "specs": object of key/value pairs,\n'
-        '  "pricing_summary": string,\n'
-        '  "recommendation_sentiment": string.\n'
-        "Base every claim on the provided data; do not invent details."
-    )
-
     message = await client.messages.create(
         model=config.CLAUDE_MODEL,
-        max_tokens=2000,
+        max_tokens=max_tokens,
         system=system,
-        messages=[{"role": "user", "content": payload}],
+        messages=[{"role": "user", "content": user[:100_000]}],
     )
+    return "".join(b.text for b in message.content if b.type == "text").strip()
 
-    text = "".join(block.text for block in message.content if block.type == "text").strip()
-    if text.startswith("```"):
-        # Defensive: strip a ```json ... ``` fence if the model adds one anyway.
+
+def _parse_json(text: str) -> Any:
+    if text.startswith("```"):  # strip an accidental ```json fence
         text = text.split("```", 2)[1].removeprefix("json").strip()
+    return json.loads(text)
 
+
+async def summarize_site(listing: Dict[str, Any], scraped: Dict[str, Any]) -> str:
+    """Short, plain-language summary of a single visited listing."""
+    data = json.dumps(
+        {
+            "title": listing.get("title"),
+            "source": listing.get("source"),
+            "price": listing.get("price"),
+            "description": scraped.get("description"),
+        },
+        default=str,
+    )
+    system = (
+        "You summarize a single online product listing in 1–2 concise sentences: what it is, "
+        "the seller/source, price if known, and anything notable. Plain text only, no preamble. "
+        "Base it only on the data provided."
+    )
+    return await _claude_text(system, data, max_tokens=200)
+
+
+async def generate_ai_report(sites: List[Dict[str, Any]]) -> MergedReport:
+    """Merge all visited-site data into one report using Claude."""
+    payload = json.dumps({"sites": sites}, default=str)
+    system = (
+        "You are a product-sourcing intelligence analyst. You are given data for a single product "
+        "gathered across multiple online retailers (per-site summaries, prices, descriptions). "
+        "Synthesize ONE unbiased report merging information across all sites.\n"
+        "Respond with ONLY a JSON object (no markdown, no code fences) with exactly these keys:\n"
+        '  "summary": string — merged product description across all sites,\n'
+        '  "features": array of strings — merged feature list,\n'
+        '  "specifications": object of key/value pairs — merged specs,\n'
+        '  "pricing_summary": string — pricing observed across sites,\n'
+        '  "recommendation": string — overall sourcing recommendation.\n'
+        "Base every claim on the provided data; do not invent details."
+    )
+    text = await _claude_text(system, payload, max_tokens=2000)
     try:
-        data = json.loads(text)
-        return AIReport(**data)
+        return MergedReport(**_parse_json(text))
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Failed to parse AI report: {exc}")

@@ -4,9 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Product Sourcing Intelligence Agent: a logged-in user uploads a product image → reverse image search finds matching listings → the top listings are scraped in parallel → an LLM synthesizes an intelligence report → the report is saved to the user's history. It is a **two-process app** split into `backend/` (Python/FastAPI) and `frontend/` (Next.js/React), each self-contained and run separately.
+Product Sourcing Intelligence Agent: a logged-in user uploads a product image → reverse image search finds matching listings → each top listing is visited, scraped, and AI-summarized → an LLM merges everything into a final report. It is a **two-process app** split into `backend/` (Python/FastAPI) and `frontend/` (Next.js/React), each self-contained and run separately.
 
-All three external integrations are **real** (no longer mocked): SerpApi (Google Lens) for reverse image search, imgbb for image hosting, and Anthropic Claude for report generation. Requests are JWT-authenticated and results are persisted to a database.
+All three external integrations are **real** (no longer mocked): SerpApi (Google Lens) for reverse image search, imgbb for image hosting, and Anthropic Claude for per-site + merged report generation. Access is invite-only and cookie-authenticated.
+
+**Processing is asynchronous.** `POST /upload-image` creates a job row and returns immediately; a background task (`pipeline.py`) runs the pipeline and writes progress to the DB after every step. The frontend **polls** `GET /reports/{id}` and renders each step as it lands (sites found → each site visited → merged report). Because all progress lives in the DB, leaving the page and returning just re-reads current state — timers included.
 
 ## Running
 
@@ -44,33 +46,46 @@ There is no automated test suite. Exercise endpoints via `/docs`, or the fronten
 | `main.py` | FastAPI app, CORS, route handlers, and the `/upload-image` orchestration. Includes the auth router. |
 | `auth.py` | Cookie-based JWT auth: `POST /register`, `POST /login`, `POST /logout`, `GET /me`, and the `get_current_user` dependency. bcrypt hashing, HS256 tokens. |
 | `db.py` | Async SQLAlchemy engine, `User`/`Report` ORM models, session dependency, and Postgres-URL normalization. |
-| `services.py` | The three external integrations (see below). Missing API keys raise `HTTPException(503)`. |
+| `pipeline.py` | The background job (`run`) — executes the pipeline and commits progress to the DB after each step. |
+| `services.py` | The external integrations (see below). Missing API keys raise `HTTPException(503)`. |
 | `models.py` | Pydantic request/response models (API contract). Distinct from the SQLAlchemy ORM models in `db.py`. |
 | `config.py` | Env-var loading (`python-dotenv`). |
 | `ratelimit.py` | slowapi limiter + the per-user/per-IP key function and 429 handler. |
 | `admin.py` | Admin-only router (gated by `require_admin`): invitation CRUD and user management. |
 | `make_admin.py` | One-off script to promote an existing user to admin (bootstraps the first admin). |
 
-### `/upload-image` request flow
+### Job model & progressive pipeline
 
-Driven by `main.py:upload_image`, which depends on `auth.get_current_user` (401 without a valid Bearer JWT):
+`POST /upload-image` (auth + per-user rate limit) saves the upload to `/tmp`, creates a `Report` row with `status="processing"`, spawns `asyncio.create_task(pipeline.run(id, path))`, and returns `{id}` immediately. Task refs are held in `main._jobs` so they aren't GC'd.
 
-1. Save the uploaded image to `/tmp` under a UUID filename (cleaned up in `finally`).
-2. `services.reverse_image_search` → hosts the image on imgbb, then queries SerpApi Google Lens → normalized listing dicts (`title`, `source`, `link`, `price`, `thumbnail`).
-3. **Soft-error rule:** fewer than 3 listings → `HTTPException(400)`. This is the primary business rule to preserve.
-4. Slice to the top `MAX_LISTINGS` (5), then scrape them concurrently via `asyncio.gather` (best-effort — failures degrade gracefully).
-5. Aggregate images (search thumbnails + scraped `og:image`), capped at `MAX_IMAGES` (12); dedupe pdf/video links.
-6. `services.generate_ai_report` → Claude synthesizes an `AIReport`.
-7. Persist a `Report` row for the user (best-effort — a DB failure logs and still returns the report, so an expensive result isn't lost).
-8. Return a `ProductIntelligenceReport`.
+`pipeline.run` opens its **own** DB session and walks the status lifecycle, committing after each step so the poller sees incremental updates:
+
+1. `status=searching`, `started_at` set. Host image on imgbb → `image_url` (the uploaded image).
+2. `serpapi_lens(image_url)` → all found sites → `listings` (capped at `MAX_FOUND_SITES`).
+3. **Soft-error rule:** fewer than 3 → `status=error` with the friendly message. Preserve this.
+4. Seed `sites` = top `MAX_LISTINGS` as `pending`; `status=scraping`.
+5. For each site: `status=visiting` → `scrape_listing` → `summarize_site` (per-site Claude summary) → `done`/`failed`, commit after each. One bad site doesn't kill the run.
+6. `status=summarizing` → `generate_ai_report(sites)` merges all sites → `report` (a `MergedReport`).
+7. `status=done`, `finished_at`. Any exception → `status=error` with the message. Temp file removed in `finally`.
+
+**Mutable-JSON gotcha:** the `sites` column is mutated in place each loop; SQLAlchemy won't detect that, so `flag_modified(report, "sites")` is called before each commit. Don't remove it or per-site progress silently won't persist.
+
+**Restart caveat:** jobs run in-process. If the server restarts mid-job, that report is stuck at its last-committed status. Acceptable for dev; a production version would use a durable queue and a startup sweep to fail orphaned `processing` rows.
+
+### The report shape (`MergedReport`)
+
+`{ summary, features (list), specifications (dict), pricing_summary, recommendation }` — merged across all visited sites. Per-site data (`SiteResult`) carries its own `summary`, `price`, `description`, `image`, `status`, and timestamps.
 
 ### External services (`services.py`)
 
 Each is an isolated `async` function; all require an API key (else `503`):
-- `host_image(path)` — uploads to **imgbb**, returns a public URL. Needed because SerpApi Google Lens fetches the image **by URL**, so a local `/tmp` file must be hosted first.
-- `reverse_image_search(path)` — **SerpApi** `engine=google_lens`. Real thumbnails come straight from Google, so images actually render.
-- `scrape_listing(url)` — **httpx + BeautifulSoup**, best-effort (many retailers block bots/JS-render). Always returns a dict with `images`/`pdf_links`/`video_links`; on any error returns an empty-ish dict.
-- `generate_ai_report(listings, scraped)` — **Anthropic Claude** (`claude-opus-4-8` by default, `CLAUDE_MODEL` to override). Prompts for a JSON object and parses it into `AIReport`.
+- `host_image(path)` — uploads to **imgbb**, returns a public URL. Needed because SerpApi Google Lens fetches the image **by URL**, so a local `/tmp` file must be hosted first. The returned URL is also stored as the report's uploaded image.
+- `serpapi_lens(image_url)` — **SerpApi** `engine=google_lens` on an already-hosted URL. Real thumbnails come straight from Google, so images actually render.
+- `scrape_listing(url)` — **httpx + BeautifulSoup**, best-effort (many retailers block bots/JS-render). Returns a dict with `description`/`images`/`pdf_links`/`video_links`; on any error returns an empty-ish dict.
+- `summarize_site(listing, scraped)` — small **Claude** call → a 1–2 sentence per-site summary.
+- `generate_ai_report(sites)` — **Claude** (`CLAUDE_MODEL`, default `claude-opus-4-8`) merges all site data into a `MergedReport`.
+
+Thresholds are all env-configurable: `MAX_FOUND_SITES` (sites recorded), `MAX_LISTINGS` (sites visited), `MAX_IMAGES`, `SCRAPE_TIMEOUT_SECONDS`.
 
 ### Access model: invite-only
 
@@ -107,8 +122,8 @@ Registration is **invite-only** — there is no open sign-up. Flow: an admin cre
 
 - **Async SQLAlchemy 2.0.** `DATABASE_URL` selects the backend: unset → local `sqlite+aiosqlite` file (`app.db`); `postgres://…` → normalized to `postgresql+asyncpg` (and `sslmode` lifted out of the query into `connect_args={"ssl": True}`, since asyncpg rejects it in the URL).
 - Report payloads use **JSONB on Postgres, JSON on SQLite** via a type variant, so the same models work on both.
-- `Report` stores `user_id`, `preview_image_url`, `listings` (raw SerpApi matches), and `report` (the full `ProductIntelligenceReport` dump).
-- History endpoints: `GET /reports` (list, newest first) and `GET /reports/{id}` (full, ownership-checked → 404 otherwise).
+- `Report` is the job row: `status`, `image_url` (uploaded image), `listings` (all found sites), `sites` (per-site visited results), `report` (final `MergedReport`, null until done), `error`, and `started_at`/`finished_at`. **Everything the pipeline finds is persisted** — found sites, each visited site's data + summary, and the merged report + uploaded image.
+- Endpoints: `GET /reports` (grid of the user's uploads with status + timer fields), `GET /reports/{id}` (full live state — the **polling** endpoint; ownership-checked → 404 otherwise).
 
 ### Migrations (Alembic)
 
@@ -122,9 +137,9 @@ Schema is managed by **Alembic** — the app no longer auto-creates tables. Conf
 
 ### Frontend↔backend contract
 
-The response shape is the Pydantic `ProductIntelligenceReport` / `AIReport`. The frontend renders directly against these field names (`report.summary`, `report.features_list`, `report.specs`, `report.pricing_summary`, `report.recommendation_sentiment`, `images`, `pdf_links`, `video_links`) — **changing a model field is a breaking change to `frontend/components/SourcingView.js` and vice versa.** A saved report from `GET /reports/{id}` returns the same shape nested under `report`.
+`GET /reports/{id}` returns a `ReportStatus`: `status`, `image_url`, `found_sites`, `sites` (each `SiteResult`), `report` (`MergedReport` or null), plus timestamps. The frontend renders against these names — **changing a model field is a breaking change to `frontend/components/ProductDetail.js` and vice versa.** The final report fields are `summary`, `features`, `specifications`, `pricing_summary`, `recommendation`.
 
-**Frontend structure:** `pages/index.js` → `App` (bootstraps auth via `/me`) → `AuthForm` (login-only) or `Dashboard` (nav + view switching: `SourcingView`, `UsersView`, `InvitationsView`; admin views only for admins). `pages/invite/[token].js` is the public invite-accept page. All API calls go through the `api()` helper in `lib/api.js` (`credentials: 'include'`). Auth state lives in `App`; views bubble a 401 up via `onAuthError` to return to login.
+**Frontend structure:** `pages/index.js` → `App` (bootstraps auth via `/me`) → `AuthForm` (login-only) or `Dashboard` (nav: `SourcingView`, `UsersView`, `InvitationsView`; admin views only for admins). `SourcingView` = upload + products grid; clicking a product opens `ProductDetail`, which **polls** `GET /reports/{id}` every 1.5s while active and renders progress (found sites → collapsible per-site cards with live timers → merged report). `pages/invite/[token].js` is the public invite-accept page. Shared helpers: `lib/api.js` (fetch + cookie), `lib/status.js` (lifecycle), `lib/time.js` (`useNow`/`elapsed`/`formatDuration` — timers derive from server `started_at`, so they're correct across navigation). Auth state lives in `App`; views bubble a 401 up via `onAuthError`.
 
 ## Notes
 
