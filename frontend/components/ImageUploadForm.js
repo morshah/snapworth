@@ -1,36 +1,43 @@
 import React, { useEffect, useState } from 'react';
 import AuthForm from './AuthForm';
 
-const API_BASE_URL = 'http://127.0.0.1:8000'; // Replace with your backend URL
-const TOKEN_KEY = 'psa_token';
+// Same-site with the frontend (localhost) so the httpOnly auth cookie is sent.
+const API_BASE_URL = 'http://localhost:8000';
 
 function ImageUploadForm() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [reportData, setReportData] = useState(null);
   const [error, setError] = useState(null);
-  const [authToken, setAuthToken] = useState(null);
-  const [authReady, setAuthReady] = useState(false); // avoids SSR/first-paint flash
+  const [username, setUsername] = useState(null); // null = logged out
+  const [authReady, setAuthReady] = useState(false); // avoids first-paint flash
   const [history, setHistory] = useState([]);
 
-  // localStorage is browser-only — read it after mount.
+  // Bootstrap auth state from the httpOnly cookie — JS can't read it, so we ask
+  // the server who we are. 401 → logged out.
   useEffect(() => {
-    setAuthToken(localStorage.getItem(TOKEN_KEY));
-    setAuthReady(true);
+    (async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/me`, { credentials: 'include' });
+        if (res.ok) setUsername((await res.json()).username);
+      } catch {
+        /* server unreachable — treat as logged out */
+      } finally {
+        setAuthReady(true);
+      }
+    })();
   }, []);
 
-  // Load saved-report history whenever we have a token.
+  // Load saved-report history whenever we're logged in.
   useEffect(() => {
-    if (authToken) fetchHistory(authToken);
+    if (username) fetchHistory();
     else setHistory([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authToken]);
+  }, [username]);
 
-  const fetchHistory = async (token) => {
+  const fetchHistory = async () => {
     try {
-      const res = await fetch(`${API_BASE_URL}/reports`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetch(`${API_BASE_URL}/reports`, { credentials: 'include' });
       if (res.ok) setHistory(await res.json());
     } catch {
       /* history is non-critical — ignore fetch errors */
@@ -39,9 +46,7 @@ function ImageUploadForm() {
 
   const viewReport = async (id) => {
     try {
-      const res = await fetch(`${API_BASE_URL}/reports/${id}`, {
-        headers: { Authorization: `Bearer ${authToken}` },
-      });
+      const res = await fetch(`${API_BASE_URL}/reports/${id}`, { credentials: 'include' });
       if (res.ok) {
         const data = await res.json();
         setReportData(data.report); // same shape as a fresh upload
@@ -52,14 +57,15 @@ function ImageUploadForm() {
     }
   };
 
-  const handleAuth = (token) => {
-    localStorage.setItem(TOKEN_KEY, token);
-    setAuthToken(token);
-  };
+  const handleAuth = (name) => setUsername(name);
 
-  const handleLogout = () => {
-    localStorage.removeItem(TOKEN_KEY);
-    setAuthToken(null);
+  const handleLogout = async () => {
+    try {
+      await fetch(`${API_BASE_URL}/logout`, { method: 'POST', credentials: 'include' });
+    } catch {
+      /* clear local state regardless */
+    }
+    setUsername(null);
     setSelectedFile(null);
     setReportData(null);
     setError(null);
@@ -67,8 +73,8 @@ function ImageUploadForm() {
 
   const handleFileChange = (event) => {
     setSelectedFile(event.target.files[0]);
-    setReportData(null); // Clear previous results
-    setError(null);      // Clear previous errors
+    setReportData(null);
+    setError(null);
   };
 
   const handleUpload = async () => {
@@ -88,13 +94,12 @@ function ImageUploadForm() {
       const response = await fetch(`${API_BASE_URL}/upload-image`, {
         method: 'POST',
         body: formData,
-        // FormData sets Content-Type automatically; we only add auth.
-        headers: { Authorization: `Bearer ${authToken}` },
+        credentials: 'include', // sends the auth cookie; no Authorization header
       });
 
-      // Token rejected/expired — send the user back to the login screen.
+      // Cookie missing/expired — back to login.
       if (response.status === 401) {
-        handleLogout();
+        setUsername(null);
         setError('Your session expired. Please sign in again.');
         return;
       }
@@ -106,7 +111,7 @@ function ImageUploadForm() {
 
       const data = await response.json();
       setReportData(data);
-      fetchHistory(authToken); // refresh history with the newly saved report
+      fetchHistory(); // refresh history with the newly saved report
     } catch (err) {
       console.error('Upload failed:', err);
       setError(err.message || 'Failed to generate report. Please try again.');
@@ -124,12 +129,12 @@ function ImageUploadForm() {
         <p>Upload a product photo to find matching listings and generate an AI report.</p>
       </header>
 
-      {!authToken ? (
+      {!username ? (
         <AuthForm onAuth={handleAuth} />
       ) : (
       <div className="card">
         <div className="account-bar">
-          <span>🔒 Signed in</span>
+          <span>🔒 Signed in as <strong>{username}</strong></span>
           <button className="link-btn" onClick={handleLogout}>Log out</button>
         </div>
         <div className="uploader">

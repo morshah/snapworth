@@ -3,19 +3,25 @@ import os
 import shutil
 import uuid
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import auth
 import config
 import db
+import ratelimit
 import services
 from models import ProductIntelligenceReport, ReportListItem, StoredReport
 
 # Schema is managed by Alembic — run `alembic upgrade head` (see README).
 app = FastAPI(title="Product Sourcing Intelligence Agent")
+
+# Rate limiting (slowapi): register the limiter and the 429 handler.
+app.state.limiter = ratelimit.limiter
+app.add_exception_handler(RateLimitExceeded, ratelimit.rate_limit_handler)
 
 # Auth routes: POST /register and POST /login (issue JWTs).
 app.include_router(auth.router)
@@ -28,13 +34,16 @@ app.add_middleware(
         "http://localhost:3000",
         "http://127.0.0.1:3000",
     ],
+    allow_credentials=True,  # required so the browser sends/stores the auth cookie
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
 @app.post("/upload-image", response_model=ProductIntelligenceReport)
+@ratelimit.limiter.limit(config.UPLOAD_RATE_LIMIT, key_func=ratelimit.user_or_ip)
 async def upload_image(
+    request: Request,
     file: UploadFile = File(...),
     user: db.User = Depends(auth.get_current_user),
     session: AsyncSession = Depends(db.get_session),

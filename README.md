@@ -17,8 +17,10 @@ Everything built so far:
 ### Accounts & Security
 * **User registration** — `POST /register` creates an account (username ≥3 chars, password ≥8), passwords hashed with **bcrypt**.
 * **Login** — `POST /login` verifies credentials and issues a signed **JWT** (HS256, 60-min expiry).
-* **Protected API** — `/upload-image` and the report endpoints require a valid `Authorization: Bearer <token>`; unauthenticated requests get `401`.
-* **Frontend auth gate** — login/register screen in front of the app; token stored in `localStorage`, auto-logout on token expiry.
+* **httpOnly cookie auth** — the JWT is stored in an **httpOnly, SameSite=Lax cookie** (never exposed to JavaScript, so XSS can't steal it). `POST /logout` clears it; `GET /me` returns the current user.
+* **Protected API** — `/upload-image` and the report endpoints require the auth cookie; unauthenticated requests get `401`.
+* **Rate limiting** — `/login` & `/register` are throttled per IP (default 5/min, brute-force protection); `/upload-image` is throttled per user (default 10/hour, cost protection). Returns `429` when exceeded.
+* **Frontend auth gate** — login/register screen in front of the app; auth state comes from `GET /me`, auto-logout on session expiry.
 
 ### Core Pipeline
 * **Image upload** — accepts a multipart/form-data image file.
@@ -93,6 +95,10 @@ Edit `backend/.env`:
 | `DATABASE_URL` | no | Postgres URL (see below). Unset → local SQLite file. |
 | `CLAUDE_MODEL` | no | Defaults to `claude-opus-4-8` |
 | `JWT_EXPIRE_MINUTES` | no | Defaults to `60` |
+| `COOKIE_SECURE` | no | `false` for local http; **set `true` in production (HTTPS)** |
+| `LOGIN_RATE_LIMIT` | no | Defaults to `5/minute` (per IP) |
+| `UPLOAD_RATE_LIMIT` | no | Defaults to `10/hour` (per user) |
+| `RATE_LIMIT_STORAGE_URI` | no | In-memory by default; set e.g. `redis://…` for multi-instance |
 
 Apply the database schema (creates the tables), then run the server:
 ```bash
@@ -139,11 +145,11 @@ Frontend serves `http://localhost:3000`.
 ## Usage
 
 1. Start both backend and frontend.
-2. Open `http://localhost:3000` → **register** an account (or log in).
+2. Open **`http://localhost:3000`** → **register** an account (or log in). Use `localhost` (not `127.0.0.1`) — the auth cookie requires the frontend and backend to share the `localhost` site.
 3. Choose a product image and click **Upload & Get Report**.
 4. The pipeline runs (~20–40s) and renders the report with real product images. It's saved under **Recent reports** — click any past entry to re-view it.
 
 ## Notes & Roadmap
 
-* **Security caveats:** JWTs are stored in `localStorage` (XSS-exposed); there's no rate limiting on `/login` or `/upload-image` yet. Good next steps before going public.
+* **Production hardening:** set `COOKIE_SECURE=true` (requires HTTPS). The `SameSite=Lax` cookie mitigates CSRF for same-site use; a cross-site production frontend would need CSRF tokens. Rate-limit storage is in-memory — use `RATE_LIMIT_STORAGE_URI` (Redis) if you run more than one backend instance.
 * `.env` and the SQLite DB (`*.db`) are gitignored; never commit real keys.

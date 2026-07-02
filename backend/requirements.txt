@@ -17,3 +17,5 @@ asyncpg==0.31.0
 aiosqlite==0.22.1
 # Database migrations
 alembic==1.18.5
+# Rate limiting
+slowapi==0.1.10

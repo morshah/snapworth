@@ -29,9 +29,9 @@ class UserCredentials(BaseModel):
     password: str
 
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
+class UserOut(BaseModel):
+    """Non-sensitive user info returned to the client (no token — it's a cookie)."""
+    username: str
 
 
 class ReportListItem(BaseModel):

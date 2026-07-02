@@ -25,7 +25,7 @@ npm run build                # production build
 npm run lint                 # eslint via next lint
 ```
 
-Both must run simultaneously. The frontend hardcodes the backend URL as `API_BASE_URL` in `frontend/components/ImageUploadForm.js` and `frontend/components/AuthForm.js` — change it in both if the backend host/port changes.
+Both must run simultaneously. The frontend hardcodes the backend URL as `API_BASE_URL = http://localhost:8000` in `frontend/components/ImageUploadForm.js` and `frontend/components/AuthForm.js` — change it in both if the backend host/port changes. **Load the frontend from `http://localhost:3000` (not `127.0.0.1:3000`)** — the auth cookie is `SameSite=Lax`, so frontend and backend must share the `localhost` site or the cookie won't be sent.
 
 **Config lives in `backend/.env`** (copy from `.env.example`). Required for a full run: `SERPAPI_API_KEY`, `IMGBB_API_KEY`, `ANTHROPIC_API_KEY`, `JWT_SECRET`. Optional: `DATABASE_URL` (defaults to a local SQLite file). A missing service key returns a `503` naming the variable, so the app runs and tells you what to configure.
 
@@ -42,11 +42,12 @@ There is no automated test suite. Exercise endpoints via `/docs`, or the fronten
 | File | Responsibility |
 |---|---|
 | `main.py` | FastAPI app, CORS, route handlers, and the `/upload-image` orchestration. Includes the auth router. |
-| `auth.py` | JWT auth: `POST /register`, `POST /login`, and the `get_current_user` dependency. bcrypt hashing, HS256 tokens. |
-| `db.py` | Async SQLAlchemy engine, `User`/`Report` ORM models, session dependency, `init_models()`, and Postgres-URL normalization. |
+| `auth.py` | Cookie-based JWT auth: `POST /register`, `POST /login`, `POST /logout`, `GET /me`, and the `get_current_user` dependency. bcrypt hashing, HS256 tokens. |
+| `db.py` | Async SQLAlchemy engine, `User`/`Report` ORM models, session dependency, and Postgres-URL normalization. |
 | `services.py` | The three external integrations (see below). Missing API keys raise `HTTPException(503)`. |
 | `models.py` | Pydantic request/response models (API contract). Distinct from the SQLAlchemy ORM models in `db.py`. |
 | `config.py` | Env-var loading (`python-dotenv`). |
+| `ratelimit.py` | slowapi limiter + the per-user/per-IP key function and 429 handler. |
 
 ### `/upload-image` request flow
 
@@ -69,12 +70,22 @@ Each is an isolated `async` function; all require an API key (else `503`):
 - `scrape_listing(url)` — **httpx + BeautifulSoup**, best-effort (many retailers block bots/JS-render). Always returns a dict with `images`/`pdf_links`/`video_links`; on any error returns an empty-ish dict.
 - `generate_ai_report(listings, scraped)` — **Anthropic Claude** (`claude-opus-4-8` by default, `CLAUDE_MODEL` to override). Prompts for a JSON object and parses it into `AIReport`.
 
-### Auth (`auth.py`)
+### Auth (`auth.py`) — httpOnly cookies
 
-- `POST /register` (username ≥3, password ≥8) and `POST /login` return `{access_token}` (HS256 JWT, `JWT_EXPIRE_MINUTES` = 60). Duplicate user → 409; bad creds → 401.
-- Passwords hashed with **bcrypt**, run via `asyncio.to_thread` so the CPU-bound hash doesn't block the event loop.
-- `get_current_user` decodes the Bearer token and loads the `User` ORM row (401 on missing/expired/invalid). Protected routes depend on it.
-- Frontend stores the token in `localStorage` and sends `Authorization: Bearer …`; a `401` triggers auto-logout.
+- `POST /register` (username ≥3, password ≥8) and `POST /login` set the HS256 JWT (`JWT_EXPIRE_MINUTES` = 60) in an **httpOnly cookie** (`access_token`) and return `{username}` — **the token is never in the response body**, so JS/XSS can't read it. Duplicate user → 409; bad creds → 401.
+- `POST /logout` clears the cookie (JS can't); `GET /me` returns the current user (the frontend calls it on load to learn whether it's authenticated, since it can't read the cookie).
+- Passwords hashed with **bcrypt** via `asyncio.to_thread` (keeps the CPU-bound hash off the event loop).
+- `get_current_user` reads the token from the **cookie first, then an `Authorization: Bearer` header** (so Swagger/API clients still work), verifies it, and loads the `User` ORM row (401 otherwise). Protected routes depend on it.
+- **Cross-origin cookie constraint:** the cookie is `SameSite=Lax`, so the frontend and backend must be the **same site**. The frontend calls `http://localhost:8000` (not `127.0.0.1`) so it's same-site with `localhost:3000`. CORS has `allow_credentials=True` and specific origins (not `*`). `COOKIE_SECURE` must be `True` in production (HTTPS); `False` for local http. Frontend fetches all use `credentials: 'include'` and send **no** `Authorization` header.
+- **CSRF:** `SameSite=Lax` blocks the cookie on cross-site POSTs, which mitigates CSRF here. For a real cross-site production setup, add CSRF tokens (or keep everything same-site).
+
+### Rate limiting (`ratelimit.py`)
+
+- **slowapi.** `/login` and `/register` are limited **per IP** (`LOGIN_RATE_LIMIT`, default `5/minute`) for brute-force protection; `/upload-image` is limited **per user** (`UPLOAD_RATE_LIMIT`, default `10/hour`) for cost protection — each upload spends money.
+- The limiter is registered on `app.state.limiter` with a custom 429 handler returning `{"detail": ...}` (matches the rest of the API). Rate-limited routes take a `request: Request` param (slowapi requirement).
+- The per-user key (`user_or_ip`) reads the JWT subject from the cookie/header, falling back to client IP.
+- Storage is **in-memory (per-process)** by default — set `RATE_LIMIT_STORAGE_URI` (e.g. `redis://…`) for a multi-instance deployment, or limits won't be shared across workers.
+- **Note:** `get_current_user` (a dependency) runs before the limiter on `/upload-image`, so unauthenticated calls get `401` and aren't counted against the per-user limit — fine, since only authenticated calls cost money.
 
 ### Persistence (`db.py`)
 

@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
 
-const API_BASE_URL = 'http://127.0.0.1:8000';
+// Same-site with the frontend (localhost) so the httpOnly auth cookie is sent.
+const API_BASE_URL = 'http://localhost:8000';
 
-// Login / register form. Calls onAuth(token) once a JWT is obtained.
+// Login / register form. On success the backend sets an httpOnly auth cookie;
+// we just receive the username and hand it up via onAuth(username).
 function AuthForm({ onAuth }) {
   const [mode, setMode] = useState('login'); // 'login' | 'register'
   const [username, setUsername] = useState('');
@@ -21,6 +23,7 @@ function AuthForm({ onAuth }) {
       const response = await fetch(`${API_BASE_URL}/${mode}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
+        credentials: 'include', // send/receive the auth cookie
         body: JSON.stringify({ username, password }),
       });
 
@@ -28,7 +31,7 @@ function AuthForm({ onAuth }) {
       if (!response.ok) {
         throw new Error(data.detail || `HTTP error! status: ${response.status}`);
       }
-      onAuth(data.access_token);
+      onAuth(data.username);
     } catch (err) {
       setError(err.message || 'Something went wrong. Please try again.');
     } finally {
