@@ -22,7 +22,7 @@ This project implements a "Product Sourcing Intelligence Agent" that allows user
 
 1.  **Navigate to the project root:**
     ```bash
-    cd /path/to/your/project/manx/product-sourcing-agent
+    cd /product-sourcing-agent
     ```
 2.  **Install Python dependencies:**
     ```bash
