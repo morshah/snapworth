@@ -22,17 +22,32 @@ This project implements a "Product Sourcing Intelligence Agent" that allows user
 
 1.  **Navigate to the project root:**
     ```bash
-    cd /product-sourcing-agent
+    cd /path/to/your/project/product-sourcing-agent
     ```
-2.  **Install Python dependencies:**
+2.  **Create and activate a Python Virtual Environment:**
+    It's highly recommended to use a virtual environment to manage dependencies and avoid conflicts with system-wide Python packages.
+    ```bash
+    python3 -m venv venv
+    source venv/bin/activate
+    ```
+    (You will see `(venv)` prefix in your terminal, indicating the virtual environment is active.)
+
+3.  **Install Python dependencies:**
     ```bash
     pip install fastapi uvicorn pydantic python-multipart
     ```
-3.  **Run the FastAPI server:**
+    *If you encounter an `externally-managed-environment` error, activating the virtual environment as shown above should resolve it.*
+
+4.  **Run the FastAPI server:**
     ```bash
     uvicorn main:app --reload
     ```
     The backend will start on `http://127.0.0.1:8000`. You can access the interactive API documentation (Swagger UI) at `http://127.0.0.1:8000/docs`.
+
+5.  **Deactivate the virtual environment** (when you're done working on the backend):
+    ```bash
+    deactivate
+    ```
 
 ### 2. Frontend Setup (React/Next.js)
 
