@@ -1,101 +1,134 @@
 # Product Sourcing Intelligence Agent
 
-This project implements a "Product Sourcing Intelligence Agent" that allows users to upload an image, perform a reverse image search to find similar products online, scrape data from those product listings, and generate a synthesized AI-powered intelligence report.
+A full-stack app where a logged-in user uploads a product image, and the system performs a **reverse image search** to find matching listings online, **scrapes** those listings, and uses an **AI model** to synthesize a single, unbiased product intelligence report. Each report is saved to the user's history.
 
 ## Technical Stack
 
-*   **Backend:** Python with FastAPI
-*   **Frontend:** React/Next.js
+* **Backend:** Python, FastAPI, SQLAlchemy (async)
+* **Frontend:** React / Next.js
+* **Database:** PostgreSQL (production) / SQLite (local dev)
+* **External APIs:** SerpApi (Google Lens), imgbb (image hosting), Anthropic Claude
+* **Auth:** JWT (PyJWT) + bcrypt password hashing
 
 ## Features
 
-*   **Image Upload:** Accepts a multipart/form-data image file.
-*   **Reverse Image Search (Mocked):** Simulates calling a vision API (Google Vision/Azure Computer Vision) to find matching product URLs.
-*   **Parallel Web Scraping (Mocked):** Scrapes the top 5 matching URLs in parallel for product details like images, price, availability, description, reviews, and specifications.
-*   **AI-Powered Report Generation (Mocked):** Synthesizes the scraped data into a single, unbiased product intelligence report using an AI model (OpenAI GPT-4/Claude API).
-*   **Structured Output:** Returns a JSON object containing the AI report, aggregated images, and PDF/video links.
-*   **Error Handling:** Provides a soft error if fewer than 3 product matches are found.
+Everything built so far:
+
+### Accounts & Security
+* **User registration** — `POST /register` creates an account (username ≥3 chars, password ≥8), passwords hashed with **bcrypt**.
+* **Login** — `POST /login` verifies credentials and issues a signed **JWT** (HS256, 60-min expiry).
+* **Protected API** — `/upload-image` and the report endpoints require a valid `Authorization: Bearer <token>`; unauthenticated requests get `401`.
+* **Frontend auth gate** — login/register screen in front of the app; token stored in `localStorage`, auto-logout on token expiry.
+
+### Core Pipeline
+* **Image upload** — accepts a multipart/form-data image file.
+* **Image hosting (imgbb)** — uploads the image to get a public URL (required because Google Lens fetches the image by URL).
+* **Reverse image search (SerpApi / Google Lens)** — finds matching product listings, with real product titles, sources, prices, and thumbnails.
+* **Parallel web scraping (httpx + BeautifulSoup)** — best-effort scrape of the top listings for extra detail (description, price, og:image, PDF links); degrades gracefully when a site blocks scraping.
+* **AI report generation (Anthropic Claude)** — synthesizes the gathered data into a structured, unbiased report using `claude-opus-4-8`.
+* **Structured output** — returns a JSON object: `report` (summary, features list, specs, pricing summary, recommendation), aggregated `images`, and `pdf_links` / `video_links`.
+* **Soft error handling** — if fewer than 3 matches are found, returns a `400` asking for a clearer photo.
+
+### Persistence & History
+* **Report persistence** — every completed search is saved to the database (PostgreSQL/SQLite via SQLAlchemy; report payload stored as JSONB on Postgres).
+* **Report history** — `GET /reports` lists a user's past reports (newest first); `GET /reports/{id}` returns a full saved report (ownership-checked).
+* **History UI** — a "Recent reports" panel lists past searches with thumbnails; click one to re-view it instantly without re-running the (paid) pipeline.
+
+## External APIs & Keys
+
+The pipeline calls three third-party services. Each needs an API key in `backend/.env`:
+
+| Service | Purpose | Get a key | Cost |
+|---|---|---|---|
+| **Anthropic Claude** | Generates the report | https://console.anthropic.com/settings/keys | Pay-per-token (cents per report) |
+| **SerpApi** | Reverse image search (Google Lens) | https://serpapi.com | Free tier (~100 searches/mo), then paid |
+| **imgbb** | Hosts the uploaded image for SerpApi | https://api.imgbb.com | Free |
+
+> ⚠️ **Each upload spends real money** (one SerpApi search + Claude tokens). There is no caching of identical searches.
 
 ## Project Structure
 
-The project is split into two self-contained apps that communicate over HTTP:
+Two self-contained apps that communicate over HTTP:
 
 ```
-backend/    FastAPI service (main.py, requirements.txt)
-frontend/   Next.js app (pages/, components/, package.json)
+backend/                 FastAPI service
+  main.py                app + routes + /upload-image orchestration
+  auth.py                register / login / JWT dependency
+  db.py                  async SQLAlchemy engine + User/Report models
+  services.py            SerpApi + imgbb + scraping + Claude integrations
+  models.py              Pydantic request/response models
+  config.py              env-var loading
+  requirements.txt
+  .env.example           template — copy to .env and fill in
+frontend/                Next.js app
+  pages/                 index.js, _app.js
+  components/            ImageUploadForm.js, AuthForm.js
+  styles/globals.css
+  package.json
 ```
 
-## Setup Instructions
+## Setup
 
-### 1. Backend Setup (FastAPI)
+### 1. Backend
 
-1.  **Create and activate a Python virtual environment:**
-    ```bash
-    cd backend
-    python3 -m venv venv
-    source venv/bin/activate
-    ```
-    (You will see a `(venv)` prefix in your terminal, indicating the virtual environment is active.)
+```bash
+cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env        # then fill in the keys below
+```
 
-2.  **Install Python dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-    *If you encounter an `externally-managed-environment` error, activating the virtual environment as shown above should resolve it.*
+Edit `backend/.env`:
 
-3.  **Run the FastAPI server:**
-    ```bash
-    uvicorn main:app --reload
-    ```
-    The backend will start on `http://127.0.0.1:8000`. You can access the interactive API documentation (Swagger UI) at `http://127.0.0.1:8000/docs`.
+| Variable | Required | Notes |
+|---|---|---|
+| `SERPAPI_API_KEY` | yes | Reverse image search |
+| `IMGBB_API_KEY` | yes | Image hosting |
+| `ANTHROPIC_API_KEY` | yes | Report generation |
+| `JWT_SECRET` | yes | Generate with `python -c "import secrets; print(secrets.token_hex(32))"` |
+| `DATABASE_URL` | no | Postgres URL (see below). Unset → local SQLite file. |
+| `CLAUDE_MODEL` | no | Defaults to `claude-opus-4-8` |
+| `JWT_EXPIRE_MINUTES` | no | Defaults to `60` |
 
-4.  **Deactivate the virtual environment** (when you're done working on the backend):
-    ```bash
-    deactivate
-    ```
+Run the server:
+```bash
+uvicorn main:app --reload
+```
+Backend serves `http://127.0.0.1:8000` (Swagger UI at `/docs`). Database tables are created automatically on startup.
 
-### 2. Frontend Setup (React/Next.js)
+> After editing `.env`, **restart uvicorn** — env vars are read at startup, not on `--reload`.
 
-1.  **Install Node.js dependencies:**
-    ```bash
-    cd frontend
-    npm install
-    ```
+### 2. Database
 
-2.  **Run the Next.js development server:**
-    ```bash
-    npm run dev
-    ```
-    The frontend will be accessible at `http://localhost:3000`.
+* **Local dev (default):** leave `DATABASE_URL` unset — the app uses a local SQLite file (`backend/app.db`). Zero setup.
+* **PostgreSQL:** create a database, then set:
+  ```
+  # local Postgres (no SSL):
+  DATABASE_URL=postgresql://user:pass@localhost:5432/dbname
+  # managed Postgres (Neon/Supabase — keep sslmode):
+  DATABASE_URL=postgresql://user:pass@host/dbname?sslmode=require
+  ```
+  No code changes needed — the app normalizes the URL and creates the tables on startup.
 
-## How to Test the Application
+### 3. Frontend
 
-1.  **Ensure both Backend and Frontend are running.**
-    *   FastAPI: `http://127.0.0.1:8000`
-    *   Next.js: `http://localhost:3000`
+```bash
+cd frontend
+npm install
+npm run dev
+```
+Frontend serves `http://localhost:3000`.
 
-2.  **Open your browser** to `http://localhost:3000`. You will see the "Product Sourcing Intelligence Agent" interface.
+## Usage
 
-3.  **Upload an image:**
-    *   Click the "Choose File" button and select any image file from your computer.
-    *   Click the "Upload & Get Report" button.
+1. Start both backend and frontend.
+2. Open `http://localhost:3000` → **register** an account (or log in).
+3. Choose a product image and click **Upload & Get Report**.
+4. The pipeline runs (~20–40s) and renders the report with real product images. It's saved under **Recent reports** — click any past entry to re-view it.
 
-4.  **Observe the results:**
-    *   The frontend will show a "Processing..." message.
-    *   The FastAPI backend (in your terminal where `uvicorn` is running) will print messages indicating the simulation of reverse image search, scraping, and AI report generation.
-    *   Once complete, the frontend will display the AI-generated report, aggregated product images, and any found PDF/video links.
+## Notes & Roadmap
 
-### Testing Specific Scenarios
-
-Since external APIs are mocked, you can trigger specific behaviors:
-
-*   **Trigger "Less than 3 matches" error:**
-    *   Upload an image file named `blurry_photo.jpg` (or any file with `blurry_photo` in its name, case-insensitive).
-    *   The backend's `call_reverse_image_api` placeholder is designed to return fewer than 3 URLs for this specific filename pattern, triggering the `HTTPException` with a `400` status code.
-    *   The frontend will display the error message: "Less than 3 product matches found. Please try again with a clearer photo."
-
-*   **Standard Report Generation:**
-    *   Upload any other image file (e.g., `product.png`, `item.jpeg`).
-    *   The `call_reverse_image_api` will return 5+ dummy URLs, leading to a full report generation.
-
-Remember that all data (URLs, scraped content, AI report text) are currently simulated. For a real-world application, you would replace the placeholder functions in `main.py` with actual API calls to Google Vision/Azure Computer Vision, a web scraping library (e.g., Beautiful Soup, Playwright), and OpenAI/Claude API SDKs.
+* **Schema migrations:** tables are auto-created on startup, which only creates *missing* tables. For evolving the schema on real data, add **Alembic**.
+* **Security caveats:** JWTs are stored in `localStorage` (XSS-exposed); there's no rate limiting on `/login` or `/upload-image` yet. Good next steps before going public.
+* `.env` and the SQLite DB (`*.db`) are gitignored; never commit real keys.

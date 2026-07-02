@@ -11,3 +11,7 @@ anthropic==0.115.1
 # Authentication (JWT + password hashing)
 PyJWT==2.13.0
 bcrypt==5.0.0
+# Persistence (async SQLAlchemy; asyncpg for Postgres, aiosqlite for local dev)
+SQLAlchemy==2.0.51
+asyncpg==0.31.0
+aiosqlite==0.22.1

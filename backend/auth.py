@@ -1,64 +1,42 @@
 """JWT authentication: user registration, login, and a route dependency.
 
-Users live in a small SQLite table (username + bcrypt hash). Login issues a
-short-lived HS256 JWT; protected routes depend on `get_current_user`, which
-verifies the token and returns the username (or raises 401).
+Users are persisted via SQLAlchemy (see db.py). Login issues a short-lived
+HS256 JWT; protected routes depend on `get_current_user`, which verifies the
+token, loads the user, and returns the ORM object (or raises 401).
 """
-import sqlite3
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
 import jwt
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 import config
+from db import User, get_session
 from models import Token, UserCredentials
 
 router = APIRouter(tags=["auth"])
 _bearer = HTTPBearer(auto_error=False)
 
 
-# --- User store (SQLite) ---------------------------------------------------
+# --- Password hashing (bcrypt is CPU-blocking → run off the event loop) -----
 
-def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(config.AUTH_DB_PATH)
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS users ("
-        "username TEXT PRIMARY KEY, password_hash TEXT NOT NULL)"
+async def _hash_password(password: str) -> str:
+    digest = await asyncio.to_thread(bcrypt.hashpw, password.encode(), bcrypt.gensalt())
+    return digest.decode()
+
+
+async def _check_password(password: str, password_hash: str) -> bool:
+    return await asyncio.to_thread(
+        bcrypt.checkpw, password.encode(), password_hash.encode()
     )
-    return conn
 
 
-def _create_user(username: str, password: str) -> None:
-    pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
-    conn = _connect()
-    try:
-        conn.execute(
-            "INSERT INTO users (username, password_hash) VALUES (?, ?)",
-            (username, pw_hash),
-        )
-        conn.commit()
-    except sqlite3.IntegrityError:
-        raise HTTPException(status_code=409, detail="Username already taken.")
-    finally:
-        conn.close()
-
-
-def _verify_user(username: str, password: str) -> bool:
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT password_hash FROM users WHERE username = ?", (username,)
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        return False
-    return bcrypt.checkpw(password.encode(), row[0].encode())
-
-
-# --- JWT -------------------------------------------------------------------
+# --- JWT --------------------------------------------------------------------
 
 def _secret() -> str:
     if not config.JWT_SECRET:
@@ -76,10 +54,11 @@ def _issue_token(username: str) -> Token:
     return Token(access_token=encoded)
 
 
-def get_current_user(
+async def get_current_user(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> str:
-    """Route dependency: verify the Bearer token, return the username, or 401."""
+    session: AsyncSession = Depends(get_session),
+) -> User:
+    """Route dependency: verify the Bearer token and load the user, or 401."""
     if creds is None:
         raise HTTPException(status_code=401, detail="Not authenticated.")
     try:
@@ -90,29 +69,42 @@ def get_current_user(
         raise HTTPException(status_code=401, detail="Token expired. Please log in again.")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Invalid token.")
+
     username = payload.get("sub")
-    if not username:
+    user = await session.scalar(select(User).where(User.username == username))
+    if user is None:
         raise HTTPException(status_code=401, detail="Invalid token.")
-    return username
+    return user
 
 
-# --- Routes ----------------------------------------------------------------
-# Defined as sync `def` so FastAPI runs them in a threadpool — bcrypt and
-# sqlite are blocking and would otherwise stall the event loop.
+# --- Routes -----------------------------------------------------------------
 
 @router.post("/register", response_model=Token)
-def register(creds: UserCredentials) -> Token:
+async def register(
+    creds: UserCredentials, session: AsyncSession = Depends(get_session)
+) -> Token:
     if len(creds.username) < 3 or len(creds.password) < 8:
         raise HTTPException(
             status_code=400,
             detail="Username must be ≥3 chars and password ≥8 chars.",
         )
-    _create_user(creds.username, creds.password)
+    user = User(
+        username=creds.username, password_hash=await _hash_password(creds.password)
+    )
+    session.add(user)
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(status_code=409, detail="Username already taken.")
     return _issue_token(creds.username)
 
 
 @router.post("/login", response_model=Token)
-def login(creds: UserCredentials) -> Token:
-    if not _verify_user(creds.username, creds.password):
+async def login(
+    creds: UserCredentials, session: AsyncSession = Depends(get_session)
+) -> Token:
+    user = await session.scalar(select(User).where(User.username == creds.username))
+    if user is None or not await _check_password(creds.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect username or password.")
     return _issue_token(creds.username)

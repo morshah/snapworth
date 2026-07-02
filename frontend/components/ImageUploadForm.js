@@ -11,12 +11,46 @@ function ImageUploadForm() {
   const [error, setError] = useState(null);
   const [authToken, setAuthToken] = useState(null);
   const [authReady, setAuthReady] = useState(false); // avoids SSR/first-paint flash
+  const [history, setHistory] = useState([]);
 
   // localStorage is browser-only — read it after mount.
   useEffect(() => {
     setAuthToken(localStorage.getItem(TOKEN_KEY));
     setAuthReady(true);
   }, []);
+
+  // Load saved-report history whenever we have a token.
+  useEffect(() => {
+    if (authToken) fetchHistory(authToken);
+    else setHistory([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authToken]);
+
+  const fetchHistory = async (token) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/reports`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) setHistory(await res.json());
+    } catch {
+      /* history is non-critical — ignore fetch errors */
+    }
+  };
+
+  const viewReport = async (id) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/reports/${id}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setReportData(data.report); // same shape as a fresh upload
+        setError(null);
+      }
+    } catch {
+      setError('Could not load that report.');
+    }
+  };
 
   const handleAuth = (token) => {
     localStorage.setItem(TOKEN_KEY, token);
@@ -72,6 +106,7 @@ function ImageUploadForm() {
 
       const data = await response.json();
       setReportData(data);
+      fetchHistory(authToken); // refresh history with the newly saved report
     } catch (err) {
       console.error('Upload failed:', err);
       setError(err.message || 'Failed to generate report. Please try again.');
@@ -198,6 +233,35 @@ function ImageUploadForm() {
                 </ul>
               </div>
             )}
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <div className="section history">
+            <div className="section-title">Recent reports</div>
+            <ul className="history-list">
+              {history.map((item) => (
+                <li key={item.id}>
+                  <button className="history-item" onClick={() => viewReport(item.id)}>
+                    {item.preview_image_url ? (
+                      <img
+                        src={item.preview_image_url}
+                        alt=""
+                        onError={(e) => { e.target.style.visibility = 'hidden'; }}
+                      />
+                    ) : (
+                      <span className="history-thumb">🔍</span>
+                    )}
+                    <span className="history-text">
+                      <span className="history-summary">{item.summary || 'Untitled report'}</span>
+                      <span className="history-date">
+                        {new Date(item.created_at).toLocaleString()}
+                      </span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
       </div>

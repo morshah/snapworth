@@ -3,8 +3,10 @@
 The frontend renders directly against these field names — changing a field
 here is a breaking change to frontend/components/ImageUploadForm.js.
 """
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
 from pydantic import BaseModel
-from typing import List, Dict, Any
 
 
 class AIReport(BaseModel):
@@ -30,3 +32,19 @@ class UserCredentials(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+class ReportListItem(BaseModel):
+    """One row in a user's saved-report history."""
+    id: int
+    created_at: datetime
+    preview_image_url: Optional[str] = None
+    summary: str
+
+
+class StoredReport(BaseModel):
+    """A full saved report retrieved from history."""
+    id: int
+    created_at: datetime
+    preview_image_url: Optional[str] = None
+    report: ProductIntelligenceReport

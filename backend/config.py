@@ -14,8 +14,11 @@ load_dotenv()  # loads backend/.env if present; real env vars take precedence
 JWT_SECRET = os.getenv("JWT_SECRET")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "60"))
-AUTH_DB_PATH = os.getenv(
-    "AUTH_DB_PATH", os.path.join(os.path.dirname(__file__), "auth.db")
+
+# Database — Postgres in production; defaults to a local SQLite file for dev.
+# Set DATABASE_URL to your Neon/Supabase connection string to use Postgres.
+DATABASE_URL = os.getenv("DATABASE_URL") or (
+    f"sqlite+aiosqlite:///{os.path.join(os.path.dirname(__file__), 'app.db')}"
 )
 
 # Reverse image search — SerpApi (Google Lens engine). https://serpapi.com
