@@ -3,3 +3,8 @@ fastapi==0.139.0
 uvicorn==0.49.0
 pydantic==2.13.4
 python-multipart==0.0.32
+# Real integrations (reverse image search, scraping, Claude report)
+httpx==0.28.1
+beautifulsoup4==4.15.0
+python-dotenv==1.2.2
+anthropic==0.115.1
