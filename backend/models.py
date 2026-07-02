@@ -29,9 +29,54 @@ class UserCredentials(BaseModel):
     password: str
 
 
+class InviteRegister(BaseModel):
+    """Registration payload — requires a valid invite token (invite-only)."""
+    username: str
+    password: str
+    token: str
+
+
 class UserOut(BaseModel):
     """Non-sensitive user info returned to the client (no token — it's a cookie)."""
     username: str
+    is_admin: bool = False
+
+
+# --- Admin: user management ---
+
+class UserAdminOut(BaseModel):
+    id: int
+    username: str
+    is_admin: bool
+    created_at: datetime
+
+
+class UserUpdate(BaseModel):
+    is_admin: Optional[bool] = None
+    password: Optional[str] = None  # optional password reset
+
+
+# --- Admin: invitations ---
+
+class InvitationCreate(BaseModel):
+    email: Optional[str] = None
+    grants_admin: bool = False
+
+
+class InvitationOut(BaseModel):
+    id: int
+    token: str
+    email: Optional[str] = None
+    grants_admin: bool
+    created_at: datetime
+    expires_at: datetime
+    accepted_at: Optional[datetime] = None
+
+
+class InviteInfo(BaseModel):
+    """Public-facing invite validity check for the accept page."""
+    valid: bool
+    email: Optional[str] = None
 
 
 class ReportListItem(BaseModel):

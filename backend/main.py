@@ -9,6 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import admin
 import auth
 import config
 import db
@@ -23,8 +24,9 @@ app = FastAPI(title="Product Sourcing Intelligence Agent")
 app.state.limiter = ratelimit.limiter
 app.add_exception_handler(RateLimitExceeded, ratelimit.rate_limit_handler)
 
-# Auth routes: POST /register and POST /login (issue JWTs).
+# Auth routes (register/login/logout/me/invite check) and admin routes.
 app.include_router(auth.router)
+app.include_router(admin.router)
 
 # Allow the Next.js dev server (http://localhost:3000) to call this API from
 # the browser. Without this, cross-origin fetches fail with "Failed to fetch".

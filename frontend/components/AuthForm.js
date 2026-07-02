@@ -1,48 +1,35 @@
 import React, { useState } from 'react';
+import { api } from '../lib/api';
 
-// Same-site with the frontend (localhost) so the httpOnly auth cookie is sent.
-const API_BASE_URL = 'http://localhost:8000';
-
-// Login / register form. On success the backend sets an httpOnly auth cookie;
-// we just receive the username and hand it up via onAuth(username).
+// Login only. Registration is invite-only and happens on /invite/<token>.
 function AuthForm({ onAuth }) {
-  const [mode, setMode] = useState('login'); // 'login' | 'register'
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-
-  const isRegister = mode === 'register';
 
   const handleSubmit = async (event) => {
     event.preventDefault();
     setLoading(true);
     setError(null);
 
-    try {
-      const response = await fetch(`${API_BASE_URL}/${mode}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'include', // send/receive the auth cookie
-        body: JSON.stringify({ username, password }),
-      });
+    const { ok, data } = await api('/login', {
+      method: 'POST',
+      body: { username, password },
+    });
+    setLoading(false);
 
-      const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.detail || `HTTP error! status: ${response.status}`);
-      }
-      onAuth(data.username);
-    } catch (err) {
-      setError(err.message || 'Something went wrong. Please try again.');
-    } finally {
-      setLoading(false);
+    if (ok) {
+      onAuth(data); // { username, is_admin }
+    } else {
+      setError((data && data.detail) || 'Sign in failed. Please try again.');
     }
   };
 
   return (
     <div className="card">
       <form className="auth-form" onSubmit={handleSubmit}>
-        <h2>{isRegister ? 'Create an account' : 'Sign in'}</h2>
+        <h2>Sign in</h2>
 
         <div className="field">
           <label htmlFor="username">Username</label>
@@ -61,7 +48,7 @@ function AuthForm({ onAuth }) {
           <input
             id="password"
             type="password"
-            autoComplete={isRegister ? 'new-password' : 'current-password'}
+            autoComplete="current-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
@@ -78,27 +65,15 @@ function AuthForm({ onAuth }) {
         <button className="btn" type="submit" disabled={loading || !username || !password}>
           {loading ? (
             <>
-              <span className="spinner" /> Please wait…
+              <span className="spinner" /> Signing in…
             </>
-          ) : isRegister ? (
-            'Create account'
           ) : (
             'Sign in'
           )}
         </button>
 
         <div className="auth-toggle">
-          {isRegister ? 'Already have an account? ' : "Don't have an account? "}
-          <button
-            type="button"
-            className="link-btn"
-            onClick={() => {
-              setMode(isRegister ? 'login' : 'register');
-              setError(null);
-            }}
-          >
-            {isRegister ? 'Sign in' : 'Register'}
-          </button>
+          Access is by invitation only. Ask an administrator for an invite link.
         </div>
       </form>
     </div>

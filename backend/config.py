@@ -21,6 +21,9 @@ COOKIE_NAME = "access_token"
 COOKIE_SECURE = os.getenv("COOKIE_SECURE", "false").lower() == "true"
 COOKIE_SAMESITE = os.getenv("COOKIE_SAMESITE", "lax")  # lax | strict | none
 
+# Invitations (invite-only registration).
+INVITE_EXPIRE_DAYS = int(os.getenv("INVITE_EXPIRE_DAYS", "7"))
+
 # Database — Postgres in production; defaults to a local SQLite file for dev.
 # Set DATABASE_URL to your Neon/Supabase connection string to use Postgres.
 DATABASE_URL = os.getenv("DATABASE_URL") or (

@@ -17,11 +17,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 import config
-from db import User, get_session
-from models import UserCredentials, UserOut
+from db import Invitation, User, get_session
+from models import InviteInfo, InviteRegister, UserCredentials, UserOut
 from ratelimit import limiter
 
 router = APIRouter(tags=["auth"])
+
+
+def _utcnow() -> datetime:
+    """Naive UTC now, to compare against naive DB timestamps."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 # --- Password hashing (bcrypt is CPU-blocking → run off the event loop) -----
@@ -98,6 +103,13 @@ async def get_current_user(
     return user
 
 
+async def require_admin(user: User = Depends(get_current_user)) -> User:
+    """Route dependency: 403 unless the current user is an admin."""
+    if not user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return user
+
+
 # --- Routes -----------------------------------------------------------------
 
 @router.post("/register", response_model=UserOut)
@@ -105,25 +117,55 @@ async def get_current_user(
 async def register(
     request: Request,
     response: Response,
-    creds: UserCredentials,
+    creds: InviteRegister,
     session: AsyncSession = Depends(get_session),
 ) -> UserOut:
+    """Invite-only registration: a valid, unused, unexpired token is required."""
     if len(creds.username) < 3 or len(creds.password) < 8:
         raise HTTPException(
             status_code=400,
             detail="Username must be ≥3 chars and password ≥8 chars.",
         )
+
+    invite = await session.scalar(
+        select(Invitation).where(Invitation.token == creds.token)
+    )
+    if invite is None or invite.accepted_at is not None or invite.expires_at <= _utcnow():
+        raise HTTPException(
+            status_code=400, detail="This invitation is invalid or has expired."
+        )
+
     user = User(
-        username=creds.username, password_hash=await _hash_password(creds.password)
+        username=creds.username,
+        password_hash=await _hash_password(creds.password),
+        is_admin=invite.grants_admin,
     )
     session.add(user)
     try:
-        await session.commit()
+        await session.flush()  # surface a duplicate username before consuming the invite
     except IntegrityError:
         await session.rollback()
         raise HTTPException(status_code=409, detail="Username already taken.")
+
+    invite.accepted_at = _utcnow()  # single-use
+    await session.commit()
+
     _set_auth_cookie(response, creds.username)
-    return UserOut(username=creds.username)
+    return UserOut(username=creds.username, is_admin=user.is_admin)
+
+
+@router.get("/invite/{token}", response_model=InviteInfo)
+async def check_invite(
+    token: str, session: AsyncSession = Depends(get_session)
+) -> InviteInfo:
+    """Public: lets the accept page verify an invite before showing the form."""
+    invite = await session.scalar(select(Invitation).where(Invitation.token == token))
+    valid = (
+        invite is not None
+        and invite.accepted_at is None
+        and invite.expires_at > _utcnow()
+    )
+    return InviteInfo(valid=valid, email=invite.email if valid else None)
 
 
 @router.post("/login", response_model=UserOut)
@@ -138,13 +180,13 @@ async def login(
     if user is None or not await _check_password(creds.password, user.password_hash):
         raise HTTPException(status_code=401, detail="Incorrect username or password.")
     _set_auth_cookie(response, creds.username)
-    return UserOut(username=creds.username)
+    return UserOut(username=user.username, is_admin=user.is_admin)
 
 
 @router.get("/me", response_model=UserOut)
 async def me(user: User = Depends(get_current_user)) -> UserOut:
     """Return the current user — used by the frontend to bootstrap auth state."""
-    return UserOut(username=user.username)
+    return UserOut(username=user.username, is_admin=user.is_admin)
 
 
 @router.post("/logout")

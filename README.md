@@ -15,12 +15,18 @@ A full-stack app where a logged-in user uploads a product image, and the system 
 Everything built so far:
 
 ### Accounts & Security
-* **User registration** — `POST /register` creates an account (username ≥3 chars, password ≥8), passwords hashed with **bcrypt**.
+* **Invite-only access** — no open sign-up. New users can only register through a single-use, expiring **invitation link** created by an admin. Passwords hashed with **bcrypt**.
 * **Login** — `POST /login` verifies credentials and issues a signed **JWT** (HS256, 60-min expiry).
 * **httpOnly cookie auth** — the JWT is stored in an **httpOnly, SameSite=Lax cookie** (never exposed to JavaScript, so XSS can't steal it). `POST /logout` clears it; `GET /me` returns the current user.
 * **Protected API** — `/upload-image` and the report endpoints require the auth cookie; unauthenticated requests get `401`.
 * **Rate limiting** — `/login` & `/register` are throttled per IP (default 5/min, brute-force protection); `/upload-image` is throttled per user (default 10/hour, cost protection). Returns `429` when exceeded.
-* **Frontend auth gate** — login/register screen in front of the app; auth state comes from `GET /me`, auto-logout on session expiry.
+* **Frontend auth gate** — login screen in front of the app; auth state comes from `GET /me`, auto-logout on session expiry.
+
+### Admin Dashboard
+* **Dashboard with nav** — signed-in users get a nav; admins additionally see **Users** and **Invitations** tabs.
+* **Invitations** — admins create invite links (with an optional email note and an "admin" flag), copy the link to send manually, and revoke pending invites. Invites are single-use and expire (default 7 days).
+* **User management** — admins list users, grant/revoke admin, reset passwords, and delete users. Self-lockout is prevented (you can't demote or delete yourself).
+* **Invite-accept page** — invitees open `/invite/<token>` to set their username and password.
 
 ### Core Pipeline
 * **Image upload** — accepts a multipart/form-data image file.
@@ -56,8 +62,11 @@ Two self-contained apps that communicate over HTTP:
 ```
 backend/                 FastAPI service
   main.py                app + routes + /upload-image orchestration
-  auth.py                register / login / JWT dependency
-  db.py                  async SQLAlchemy engine + User/Report models
+  auth.py                login / invite-gated register / cookie + JWT dependency
+  admin.py               admin-only: invitation + user management
+  make_admin.py          bootstrap script: create/promote an admin
+  ratelimit.py           slowapi rate limiting
+  db.py                  async SQLAlchemy engine + User/Report/Invitation models
   services.py            SerpApi + imgbb + scraping + Claude integrations
   models.py              Pydantic request/response models
   config.py              env-var loading
@@ -66,8 +75,9 @@ backend/                 FastAPI service
   requirements.txt
   .env.example           template — copy to .env and fill in
 frontend/                Next.js app
-  pages/                 index.js, _app.js
-  components/            ImageUploadForm.js, AuthForm.js
+  pages/                 index.js, _app.js, invite/[token].js
+  components/            App, AuthForm, Dashboard, SourcingView, UsersView, InvitationsView
+  lib/api.js             fetch wrapper (sends the auth cookie)
   styles/globals.css
   package.json
 ```
@@ -99,13 +109,15 @@ Edit `backend/.env`:
 | `LOGIN_RATE_LIMIT` | no | Defaults to `5/minute` (per IP) |
 | `UPLOAD_RATE_LIMIT` | no | Defaults to `10/hour` (per user) |
 | `RATE_LIMIT_STORAGE_URI` | no | In-memory by default; set e.g. `redis://…` for multi-instance |
+| `INVITE_EXPIRE_DAYS` | no | Invite link lifetime; defaults to `7` |
 
-Apply the database schema (creates the tables), then run the server:
+Apply the database schema, create your first admin, then run the server:
 ```bash
-alembic upgrade head          # sets up / migrates the database
+alembic upgrade head                    # sets up / migrates the database
+python make_admin.py <username>         # bootstrap the first admin (prompts for a password)
 uvicorn main:app --reload
 ```
-Backend serves `http://127.0.0.1:8000` (Swagger UI at `/docs`).
+Backend serves `http://127.0.0.1:8000` (Swagger UI at `/docs`). Registration is invite-only, so the first admin must be created with `make_admin.py`; after that, all other users join via invite links from the dashboard.
 
 > After editing `.env`, **restart uvicorn** — env vars are read at startup, not on `--reload`.
 
@@ -145,9 +157,10 @@ Frontend serves `http://localhost:3000`.
 ## Usage
 
 1. Start both backend and frontend.
-2. Open **`http://localhost:3000`** → **register** an account (or log in). Use `localhost` (not `127.0.0.1`) — the auth cookie requires the frontend and backend to share the `localhost` site.
-3. Choose a product image and click **Upload & Get Report**.
-4. The pipeline runs (~20–40s) and renders the report with real product images. It's saved under **Recent reports** — click any past entry to re-view it.
+2. Open **`http://localhost:3000`** and **log in** as your admin account. Use `localhost` (not `127.0.0.1`) — the auth cookie requires the frontend and backend to share the `localhost` site.
+3. **To add users:** go to the **Invitations** tab → create an invite → **Copy link** → send it to the new user. They open it, set a password, and they're in. Manage users (roles, delete) in the **Users** tab.
+4. Choose a product image and click **Upload & Get Report**.
+5. The pipeline runs (~20–40s) and renders the report with real product images. It's saved under **Recent reports** — click any past entry to re-view it.
 
 ## Notes & Roadmap
 

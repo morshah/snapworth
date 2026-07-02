@@ -25,7 +25,7 @@ npm run build                # production build
 npm run lint                 # eslint via next lint
 ```
 
-Both must run simultaneously. The frontend hardcodes the backend URL as `API_BASE_URL = http://localhost:8000` in `frontend/components/ImageUploadForm.js` and `frontend/components/AuthForm.js` — change it in both if the backend host/port changes. **Load the frontend from `http://localhost:3000` (not `127.0.0.1:3000`)** — the auth cookie is `SameSite=Lax`, so frontend and backend must share the `localhost` site or the cookie won't be sent.
+Both must run simultaneously. The backend URL (`API_BASE_URL = http://localhost:8000`) and the shared `fetch` wrapper live in `frontend/lib/api.js` — change it there if the backend host/port changes. **Load the frontend from `http://localhost:3000` (not `127.0.0.1:3000`)** — the auth cookie is `SameSite=Lax`, so frontend and backend must share the `localhost` site or the cookie won't be sent.
 
 **Config lives in `backend/.env`** (copy from `.env.example`). Required for a full run: `SERPAPI_API_KEY`, `IMGBB_API_KEY`, `ANTHROPIC_API_KEY`, `JWT_SECRET`. Optional: `DATABASE_URL` (defaults to a local SQLite file). A missing service key returns a `503` naming the variable, so the app runs and tells you what to configure.
 
@@ -48,6 +48,8 @@ There is no automated test suite. Exercise endpoints via `/docs`, or the fronten
 | `models.py` | Pydantic request/response models (API contract). Distinct from the SQLAlchemy ORM models in `db.py`. |
 | `config.py` | Env-var loading (`python-dotenv`). |
 | `ratelimit.py` | slowapi limiter + the per-user/per-IP key function and 429 handler. |
+| `admin.py` | Admin-only router (gated by `require_admin`): invitation CRUD and user management. |
+| `make_admin.py` | One-off script to promote an existing user to admin (bootstraps the first admin). |
 
 ### `/upload-image` request flow
 
@@ -70,14 +72,28 @@ Each is an isolated `async` function; all require an API key (else `503`):
 - `scrape_listing(url)` — **httpx + BeautifulSoup**, best-effort (many retailers block bots/JS-render). Always returns a dict with `images`/`pdf_links`/`video_links`; on any error returns an empty-ish dict.
 - `generate_ai_report(listings, scraped)` — **Anthropic Claude** (`claude-opus-4-8` by default, `CLAUDE_MODEL` to override). Prompts for a JSON object and parses it into `AIReport`.
 
+### Access model: invite-only
+
+Registration is **invite-only** — there is no open sign-up. Flow: an admin creates an invitation (`POST /invitations`) → gets a single-use token → shares the link `/invite/<token>` → the invitee sets a username/password (`POST /register` with the token) → the invite is marked accepted (single-use, and expires after `INVITE_EXPIRE_DAYS`). An invite can `grants_admin` to mint another admin.
+
+**Bootstrap:** the first admin is chicken-and-egg (only admins can invite, and registration needs an invite). Break it with `python make_admin.py <username>` on an already-registered account.
+
 ### Auth (`auth.py`) — httpOnly cookies
 
-- `POST /register` (username ≥3, password ≥8) and `POST /login` set the HS256 JWT (`JWT_EXPIRE_MINUTES` = 60) in an **httpOnly cookie** (`access_token`) and return `{username}` — **the token is never in the response body**, so JS/XSS can't read it. Duplicate user → 409; bad creds → 401.
+- `POST /register` (invite-gated: requires a valid, unused, unexpired `token`; username ≥3, password ≥8) and `POST /login` set the HS256 JWT (`JWT_EXPIRE_MINUTES` = 60) in an **httpOnly cookie** (`access_token`) and return `{username, is_admin}` — **the token is never in the response body**, so JS/XSS can't read it. Duplicate user → 409; bad creds → 401; bad/expired invite → 400.
+- `GET /invite/{token}` (public) reports whether an invite is still valid — used by the accept page before showing the form.
 - `POST /logout` clears the cookie (JS can't); `GET /me` returns the current user (the frontend calls it on load to learn whether it's authenticated, since it can't read the cookie).
 - Passwords hashed with **bcrypt** via `asyncio.to_thread` (keeps the CPU-bound hash off the event loop).
 - `get_current_user` reads the token from the **cookie first, then an `Authorization: Bearer` header** (so Swagger/API clients still work), verifies it, and loads the `User` ORM row (401 otherwise). Protected routes depend on it.
 - **Cross-origin cookie constraint:** the cookie is `SameSite=Lax`, so the frontend and backend must be the **same site**. The frontend calls `http://localhost:8000` (not `127.0.0.1`) so it's same-site with `localhost:3000`. CORS has `allow_credentials=True` and specific origins (not `*`). `COOKIE_SECURE` must be `True` in production (HTTPS); `False` for local http. Frontend fetches all use `credentials: 'include'` and send **no** `Authorization` header.
 - **CSRF:** `SameSite=Lax` blocks the cookie on cross-site POSTs, which mitigates CSRF here. For a real cross-site production setup, add CSRF tokens (or keep everything same-site).
+
+### Admin & user management (`admin.py`)
+
+- Gated by the `require_admin` dependency (403 for non-admins), applied at the router level.
+- **Invitations:** `POST /invitations` (create, returns token), `GET /invitations` (list), `DELETE /invitations/{id}` (revoke).
+- **Users:** `GET /users` (list), `PATCH /users/{id}` (toggle `is_admin` and/or reset password), `DELETE /users/{id}` (deletes the user and their reports — reports FK-reference the user, so they're removed first).
+- **Self-lockout guards:** an admin can't remove their own admin flag or delete their own account (400).
 
 ### Rate limiting (`ratelimit.py`)
 
@@ -106,7 +122,9 @@ Schema is managed by **Alembic** — the app no longer auto-creates tables. Conf
 
 ### Frontend↔backend contract
 
-The response shape is the Pydantic `ProductIntelligenceReport` / `AIReport`. The frontend renders directly against these field names (`report.summary`, `report.features_list`, `report.specs`, `report.pricing_summary`, `report.recommendation_sentiment`, `images`, `pdf_links`, `video_links`) — **changing a model field is a breaking change to `frontend/components/ImageUploadForm.js` and vice versa.** A saved report from `GET /reports/{id}` returns the same shape nested under `report`.
+The response shape is the Pydantic `ProductIntelligenceReport` / `AIReport`. The frontend renders directly against these field names (`report.summary`, `report.features_list`, `report.specs`, `report.pricing_summary`, `report.recommendation_sentiment`, `images`, `pdf_links`, `video_links`) — **changing a model field is a breaking change to `frontend/components/SourcingView.js` and vice versa.** A saved report from `GET /reports/{id}` returns the same shape nested under `report`.
+
+**Frontend structure:** `pages/index.js` → `App` (bootstraps auth via `/me`) → `AuthForm` (login-only) or `Dashboard` (nav + view switching: `SourcingView`, `UsersView`, `InvitationsView`; admin views only for admins). `pages/invite/[token].js` is the public invite-accept page. All API calls go through the `api()` helper in `lib/api.js` (`credentials: 'include'`). Auth state lives in `App`; views bubble a 401 up via `onAuthError` to return to login.
 
 ## Notes
 

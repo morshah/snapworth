@@ -1,9 +1,5 @@
-import ImageUploadForm from '../components/ImageUploadForm';
+import App from '../components/App';
 
 export default function HomePage() {
-  return (
-    <div>
-      <ImageUploadForm />
-    </div>
-  );
+  return <App />;
 }
