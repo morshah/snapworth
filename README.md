@@ -16,58 +16,53 @@ This project implements a "Product Sourcing Intelligence Agent" that allows user
 *   **Structured Output:** Returns a JSON object containing the AI report, aggregated images, and PDF/video links.
 *   **Error Handling:** Provides a soft error if fewer than 3 product matches are found.
 
+## Project Structure
+
+The project is split into two self-contained apps that communicate over HTTP:
+
+```
+backend/    FastAPI service (main.py, requirements.txt)
+frontend/   Next.js app (pages/, components/, package.json)
+```
+
 ## Setup Instructions
 
 ### 1. Backend Setup (FastAPI)
 
-1.  **Navigate to the project root:**
+1.  **Create and activate a Python virtual environment:**
     ```bash
-    cd /path/to/your/project/product-sourcing-agent
-    ```
-2.  **Create and activate a Python Virtual Environment:**
-    It's highly recommended to use a virtual environment to manage dependencies and avoid conflicts with system-wide Python packages.
-    ```bash
+    cd backend
     python3 -m venv venv
     source venv/bin/activate
     ```
-    (You will see `(venv)` prefix in your terminal, indicating the virtual environment is active.)
+    (You will see a `(venv)` prefix in your terminal, indicating the virtual environment is active.)
 
-3.  **Install Python dependencies:**
+2.  **Install Python dependencies:**
     ```bash
-    pip install fastapi uvicorn pydantic python-multipart
+    pip install -r requirements.txt
     ```
     *If you encounter an `externally-managed-environment` error, activating the virtual environment as shown above should resolve it.*
 
-4.  **Run the FastAPI server:**
+3.  **Run the FastAPI server:**
     ```bash
     uvicorn main:app --reload
     ```
     The backend will start on `http://127.0.0.1:8000`. You can access the interactive API documentation (Swagger UI) at `http://127.0.0.1:8000/docs`.
 
-5.  **Deactivate the virtual environment** (when you're done working on the backend):
+4.  **Deactivate the virtual environment** (when you're done working on the backend):
     ```bash
     deactivate
     ```
 
 ### 2. Frontend Setup (React/Next.js)
 
-1.  **Initialize a Next.js project (if not already done):**
-    If your current directory is not already a Next.js project, you'll need to set one up. Run the following command in the project root:
+1.  **Install Node.js dependencies:**
     ```bash
-    npx create-next-app . --ts --eslint --use-npm --src-dir # or --use-yarn if you prefer
+    cd frontend
+    npm install
     ```
-    *   When prompted for the project name, enter `.` to create the project in the current directory.
-    *   You can typically say `No` to App Router and `Yes` to `src` directory if you prefer that structure.
-    *   *If you chose to use a `src` directory*, ensure the `components` and `pages` folders (which I've already created for you) are moved inside the newly created `src` folder.
-    *   If you already have a Next.js project set up, ensure the `components` and `pages` folders are in the correct location (e.g., directly in the root or within a `src` directory).
 
-2.  **Install Node.js dependencies:**
-    ```bash
-    npm install react react-dom next
-    ```
-    (These are usually installed by `create-next-app`, but run this if you encounter issues.)
-
-3.  **Run the Next.js development server:**
+2.  **Run the Next.js development server:**
     ```bash
     npm run dev
     ```

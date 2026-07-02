@@ -4,30 +4,32 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Product Sourcing Intelligence Agent: upload an image → reverse image search → scrape the top matching product listings in parallel → synthesize an AI intelligence report. It is a **two-process app** — a Python/FastAPI backend and a Next.js/React frontend running separately. All three external integrations (vision API, web scraping, LLM report generation) are currently **mocked** in `main.py`; there is no real network I/O to third parties.
+Product Sourcing Intelligence Agent: upload an image → reverse image search → scrape the top matching product listings in parallel → synthesize an AI intelligence report. It is a **two-process app** split into `backend/` (Python/FastAPI) and `frontend/` (Next.js/React), each self-contained and run separately. All three external integrations (vision API, web scraping, LLM report generation) are currently **mocked** in `backend/main.py`; there is no real network I/O to third parties.
 
 ## Running
 
-Backend (FastAPI) — from repo root, with the venv:
+Backend (FastAPI) — from `backend/`, with the venv:
 ```bash
+cd backend
 source venv/bin/activate
 uvicorn main:app --reload    # serves http://127.0.0.1:8000, Swagger UI at /docs
 ```
 
-Frontend (Next.js):
+Frontend (Next.js) — from `frontend/`:
 ```bash
+cd frontend
 npm run dev                  # serves http://localhost:3000
 npm run build                # production build
 npm run lint                 # eslint via next lint
 ```
 
-Both must run simultaneously. The frontend hardcodes the backend URL as `API_BASE_URL` in `components/ImageUploadForm.js` — change it there if the backend host/port changes.
+Both must run simultaneously. The frontend hardcodes the backend URL as `API_BASE_URL` in `frontend/components/ImageUploadForm.js` — change it there if the backend host/port changes.
 
 There is no test suite. To exercise the backend directly, POST a multipart `file` field to `/upload-image` (e.g. via `/docs`).
 
 ## Architecture
 
-Single request flow, driven entirely by `POST /upload-image` in `main.py:upload_image`:
+Single request flow, driven entirely by `POST /upload-image` in `backend/main.py:upload_image`:
 
 1. Save the uploaded image to `/tmp` under a UUID filename (cleaned up in a `finally` block).
 2. `call_reverse_image_api` → list of candidate product URLs.
@@ -37,11 +39,11 @@ Single request flow, driven entirely by `POST /upload-image` in `main.py:upload_
 6. `generate_ai_report` synthesizes the scraped data into the structured report.
 7. Return a `ProductIntelligenceReport`.
 
-The response shape is defined by the Pydantic models `AIReport` and `ProductIntelligenceReport` (`main.py`). The frontend renders directly against these field names (`report.summary`, `report.features_list`, `report.specs`, `report.pricing_summary`, `report.recommendation_sentiment`, `images`, `pdf_links`, `video_links`) — **changing a model field is a breaking change to `ImageUploadForm.js` and vice versa.**
+The response shape is defined by the Pydantic models `AIReport` and `ProductIntelligenceReport` (`backend/main.py`). The frontend renders directly against these field names (`report.summary`, `report.features_list`, `report.specs`, `report.pricing_summary`, `report.recommendation_sentiment`, `images`, `pdf_links`, `video_links`) — **changing a model field is a breaking change to `frontend/components/ImageUploadForm.js` and vice versa.**
 
 ### The three mock seams
 
-Replacing the mocks with real integrations is the expected direction of work. Each is an isolated `async` function in `main.py` with a docstring describing the real implementation:
+Replacing the mocks with real integrations is the expected direction of work. Each is an isolated `async` function in `backend/main.py` with a docstring describing the real implementation:
 - `call_reverse_image_api(image_path)` — Google Vision / Azure Computer Vision.
 - `scrape_url(url)` — httpx + BeautifulSoup/Playwright. Must return a dict with `images`, `pdf_links`, `video_links` (plus `price`, `availability`, etc.) for the aggregation step to work.
 - `generate_ai_report(scraped_data)` — OpenAI / Anthropic SDK; must return an `AIReport`.
@@ -55,4 +57,5 @@ Behavior is filename-driven so scenarios can be reproduced without real APIs:
 ## Notes
 
 - Frontend is plain Next.js `pages/` router (not App Router); no `src/` dir despite README mentioning it as optional.
-- Python deps are pinned in `requirements.txt` (direct deps: fastapi, uvicorn, pydantic, python-multipart). Recreate the venv with `python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`.
+- Python deps are pinned in `backend/requirements.txt` (direct deps: fastapi, uvicorn, pydantic, python-multipart). Recreate the venv with `cd backend && python3 -m venv venv && source venv/bin/activate && pip install -r requirements.txt`.
+- The two folders are independent: `backend/` has no knowledge of `frontend/` and vice versa — they communicate only over HTTP. There is no root-level package manifest or workspace tooling tying them together.
