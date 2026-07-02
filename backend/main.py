@@ -2,7 +2,6 @@ import asyncio
 import os
 import shutil
 import uuid
-from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,14 +14,8 @@ import db
 import services
 from models import ProductIntelligenceReport, ReportListItem, StoredReport
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await db.init_models()  # create tables on startup if missing
-    yield
-
-
-app = FastAPI(title="Product Sourcing Intelligence Agent", lifespan=lifespan)
+# Schema is managed by Alembic — run `alembic upgrade head` (see README).
+app = FastAPI(title="Product Sourcing Intelligence Agent")
 
 # Auth routes: POST /register and POST /login (issue JWTs).
 app.include_router(auth.router)

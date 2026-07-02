@@ -4,7 +4,7 @@ A full-stack app where a logged-in user uploads a product image, and the system 
 
 ## Technical Stack
 
-* **Backend:** Python, FastAPI, SQLAlchemy (async)
+* **Backend:** Python, FastAPI, SQLAlchemy (async), Alembic (migrations)
 * **Frontend:** React / Next.js
 * **Database:** PostgreSQL (production) / SQLite (local dev)
 * **External APIs:** SerpApi (Google Lens), imgbb (image hosting), Anthropic Claude
@@ -33,6 +33,7 @@ Everything built so far:
 * **Report persistence** — every completed search is saved to the database (PostgreSQL/SQLite via SQLAlchemy; report payload stored as JSONB on Postgres).
 * **Report history** — `GET /reports` lists a user's past reports (newest first); `GET /reports/{id}` returns a full saved report (ownership-checked).
 * **History UI** — a "Recent reports" panel lists past searches with thumbnails; click one to re-view it instantly without re-running the (paid) pipeline.
+* **Versioned schema migrations (Alembic)** — database schema changes are tracked as migration files, applied with `alembic upgrade head` (no manual SQL).
 
 ## External APIs & Keys
 
@@ -58,6 +59,8 @@ backend/                 FastAPI service
   services.py            SerpApi + imgbb + scraping + Claude integrations
   models.py              Pydantic request/response models
   config.py              env-var loading
+  alembic/               database migrations (versions/, env.py)
+  alembic.ini            Alembic config
   requirements.txt
   .env.example           template — copy to .env and fill in
 frontend/                Next.js app
@@ -91,11 +94,12 @@ Edit `backend/.env`:
 | `CLAUDE_MODEL` | no | Defaults to `claude-opus-4-8` |
 | `JWT_EXPIRE_MINUTES` | no | Defaults to `60` |
 
-Run the server:
+Apply the database schema (creates the tables), then run the server:
 ```bash
+alembic upgrade head          # sets up / migrates the database
 uvicorn main:app --reload
 ```
-Backend serves `http://127.0.0.1:8000` (Swagger UI at `/docs`). Database tables are created automatically on startup.
+Backend serves `http://127.0.0.1:8000` (Swagger UI at `/docs`).
 
 > After editing `.env`, **restart uvicorn** — env vars are read at startup, not on `--reload`.
 
@@ -109,7 +113,19 @@ Backend serves `http://127.0.0.1:8000` (Swagger UI at `/docs`). Database tables 
   # managed Postgres (Neon/Supabase — keep sslmode):
   DATABASE_URL=postgresql://user:pass@host/dbname?sslmode=require
   ```
-  No code changes needed — the app normalizes the URL and creates the tables on startup.
+  No code changes needed — the app normalizes the URL. Run `alembic upgrade head` to create the tables.
+
+### Database migrations (Alembic)
+
+The schema is managed by **Alembic** (run from `backend/` with the venv active):
+
+```bash
+alembic upgrade head                              # apply all migrations
+alembic revision --autogenerate -m "add x"        # after editing a model in db.py
+alembic downgrade -1                              # roll back one migration
+```
+
+After autogenerating a migration, review the file in `backend/alembic/versions/` before applying it. Migrations reuse the app's `DATABASE_URL`, so they target whichever database `.env` points at.
 
 ### 3. Frontend
 
@@ -129,6 +145,5 @@ Frontend serves `http://localhost:3000`.
 
 ## Notes & Roadmap
 
-* **Schema migrations:** tables are auto-created on startup, which only creates *missing* tables. For evolving the schema on real data, add **Alembic**.
 * **Security caveats:** JWTs are stored in `localStorage` (XSS-exposed); there's no rate limiting on `/login` or `/upload-image` yet. Good next steps before going public.
 * `.env` and the SQLite DB (`*.db`) are gitignored; never commit real keys.

@@ -15,3 +15,5 @@ bcrypt==5.0.0
 SQLAlchemy==2.0.51
 asyncpg==0.31.0
 aiosqlite==0.22.1
+# Database migrations
+alembic==1.18.5

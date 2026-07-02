@@ -74,16 +74,6 @@ class Report(Base):
     created_at: Mapped[datetime] = mapped_column(server_default=func.now())
 
 
-async def init_models() -> None:
-    """Create tables if they don't exist.
-
-    Fine for getting started; adopt Alembic once the schema needs to evolve
-    without dropping data.
-    """
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
-
 async def get_session() -> AsyncSession:
     """FastAPI dependency yielding a request-scoped async session."""
     async with AsyncSessionLocal() as session:
