@@ -1,5 +1,6 @@
 import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import os
@@ -7,6 +8,18 @@ import shutil
 import uuid # For unique filenames
 
 app = FastAPI(title="Product Sourcing Intelligence Agent")
+
+# Allow the Next.js dev server (http://localhost:3000) to call this API from
+# the browser. Without this, cross-origin fetches fail with "Failed to fetch".
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # --- Pydantic Models for API Response ---
 # These models define the structure of the JSON output
