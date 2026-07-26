@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Product Sourcing Intelligence Agent: a logged-in user uploads a product image → reverse image search finds matching listings → each top listing is visited, scraped, and AI-summarized → an LLM merges everything into a final report. It is a **two-process app** split into `backend/` (Python/FastAPI) and `frontend/` (Next.js/React), each self-contained and run separately.
+Snapworth: a logged-in user uploads a product image → reverse image search finds matching listings → each top listing is visited, scraped, and AI-summarized → an LLM merges everything into a final report. It is a **two-process app** split into `backend/` (Python/FastAPI) and `frontend/` (Next.js/React), each self-contained and run separately.
 
 All three external integrations are **real** (no longer mocked): SerpApi (Google Lens) for reverse image search, imgbb for image hosting, and Anthropic Claude for per-site + merged report generation. Access is invite-only and cookie-authenticated.
 

@@ -27,7 +27,7 @@ function App() {
   return (
     <div className="page">
       <header className="app-header">
-        <h1>Product Sourcing Intelligence Agent</h1>
+        <h1>Snapworth</h1>
         <p>Upload a product photo to find matching listings and generate an AI report.</p>
       </header>
 

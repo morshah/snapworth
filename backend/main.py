@@ -30,7 +30,7 @@ from models import (
 )
 
 # Schema is managed by Alembic — run `alembic upgrade head` (see README).
-app = FastAPI(title="Product Sourcing Intelligence Agent")
+app = FastAPI(title="Snapworth")
 
 # Rate limiting (slowapi): register the limiter and the 429 handler.
 app.state.limiter = ratelimit.limiter
@@ -88,24 +88,29 @@ async def upload_image(
 
 def _compute_stats(report: db.Report) -> ReportStats:
     sites = report.sites or []
-    prices = [s["price_value"] for s in sites if s.get("price_value") is not None]
-    ratings = [s["rating_value"] for s in sites if s.get("rating_value") is not None]
+    prices = [s["price_value"]
+              for s in sites if s.get("price_value") is not None]
+    ratings = [s["rating_value"]
+               for s in sites if s.get("rating_value") is not None]
     currencies = [s["currency"] for s in sites if s.get("currency")]
 
     stats = ReportStats(
         sites_found=len(report.listings or []),
         sites_with_price=len(prices),
-        currency=Counter(currencies).most_common(1)[0][0] if currencies else None,
+        currency=Counter(currencies).most_common(1)[
+            0][0] if currencies else None,
         price_values=sorted(prices),
         avg_rating=round(statistics.fmean(ratings), 2) if ratings else None,
-        total_reviews=sum(s["review_count"] for s in sites if s.get("review_count")),
+        total_reviews=sum(s["review_count"]
+                          for s in sites if s.get("review_count")),
     )
     if prices:
         stats.price_min = min(prices)
         stats.price_max = max(prices)
         stats.price_median = round(statistics.median(prices), 2)
         if len(prices) >= 2:
-            q1, _, q3 = statistics.quantiles(prices, n=4)  # returns 3 cut points
+            q1, _, q3 = statistics.quantiles(
+                prices, n=4)  # returns 3 cut points
             stats.price_q1 = round(q1, 2)
             stats.price_q3 = round(q3, 2)
     return stats

@@ -48,7 +48,7 @@ export default function InvitePage() {
   return (
     <div className="page">
       <header className="app-header">
-        <h1>Product Sourcing Intelligence Agent</h1>
+        <h1>Snapworth</h1>
         <p>You've been invited to create an account.</p>
       </header>
 

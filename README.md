@@ -1,4 +1,4 @@
-# Product Sourcing Intelligence Agent
+# Snapworth
 
 A full-stack app where a logged-in user uploads a product image, and the system performs a **reverse image search** to find matching listings online, **scrapes** those listings, and uses an **AI model** to synthesize a single, unbiased product intelligence report. Each report is saved to the user's history.
 
