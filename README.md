@@ -32,16 +32,19 @@ Everything built so far:
 * **Image upload** — accepts a multipart/form-data image file.
 * **Image hosting (imgbb)** — uploads the image to get a public URL (required because Google Lens fetches the image by URL); this is also stored as the product's uploaded image.
 * **Reverse image search (SerpApi / Google Lens)** — finds matching product listings, with real product titles, sources, prices, and thumbnails.
-* **Web scraping (httpx + BeautifulSoup)** — best-effort scrape of each visited listing for detail (description, price, image); degrades gracefully when a site blocks scraping.
+* **Rich web scraping (httpx + BeautifulSoup + JSON-LD)** — parses schema.org `Product` data from each listing: multiple images, **brand/manufacturer**, **GTIN/UPC/EAN barcodes**, **seller/wholesaler**, price, rating, and specs (with Open Graph / meta fallbacks). Degrades gracefully when a site blocks scraping.
+* **Secure image storage** — downloaded product images are saved on the server in **per-product folders** and served **only to the owner** through an ownership-checked endpoint (never public URLs). See galleries per source site.
+* **Customer reviews & ratings** — extracts review snippets, star ratings, and review counts per site.
 * **Per-site AI summaries** — a Claude call summarizes each visited listing as it's processed.
-* **Merged AI report (Anthropic Claude)** — merges all sites into one report: `summary`, `features`, `specifications`, `pricing_summary`, `recommendation`.
+* **Decision case for a manager** — the final report reads as a business case: `summary`, a **verdict/recommendation**, **pros** (reasons to approve), **cons/risks**, **customer sentiment**, plus features, specs, sourcing (manufacturer/wholesalers/barcodes) and pricing.
+* **Decision KPIs & price analysis** — a stat dashboard (how many sites it's on, price range, median, avg rating, total reviews) and a **price box plot** (min / Q1 / median / Q3 / max with per-site points).
 * **Configurable thresholds** — number of sites to record/visit, images to fetch, and scrape timeout are all set in `.env`.
 * **Soft error handling** — if fewer than 3 matches are found, the job ends with a friendly error.
 
 ### Live Progress (async processing)
 * **Instant start** — uploading kicks off a background job and returns immediately; the UI shows each step as it completes rather than waiting for the whole pipeline.
-* **Step-by-step results** — see the list of all sites found, then each site as it's visited (with what was found + its AI summary), then the final merged report.
-* **Live timers** — an overall timer and a per-site timer show elapsed time; the current site expands while older ones collapse to a one-line origin.
+* **Step-by-step results** — found sites shown as horizontal pills, then each visited site as an expandable card with its image gallery, manufacturer, seller, barcodes, specs, and AI summary, then the final merged report.
+* **Live timers + auto-scroll** — an overall timer and a per-site timer show elapsed time; the site being visited **and the one just finished** stay expanded (so you can read its stats) while older ones collapse, and the page auto-scrolls to follow the work.
 * **Survives navigation** — all progress is stored server-side, so leaving the page and coming back (or refreshing) resumes exactly where it is, timers included.
 * **Products grid** — a grid of all your uploads, each with its status and a live timer for in-progress ones; click any product to open its progress/report.
 
@@ -120,7 +123,9 @@ Edit `backend/.env`:
 | `MAX_FOUND_SITES` | no | Sites recorded from search; defaults to `30` |
 | `MAX_LISTINGS` | no | Sites actually visited & scraped; defaults to `5` |
 | `MAX_IMAGES` | no | Images aggregated per report; defaults to `12` |
-| `SCRAPE_TIMEOUT_SECONDS` | no | Per-site scrape timeout; defaults to `8` |
+| `MAX_IMAGES_PER_SITE` | no | Images downloaded & stored per site; defaults to `8` |
+| `SCRAPE_TIMEOUT_SECONDS` | no | Per-site scrape/image timeout; defaults to `8` |
+| `STORAGE_DIR` | no | Where images are stored; defaults to `backend/storage` |
 
 Apply the database schema, create your first admin, then run the server:
 ```bash

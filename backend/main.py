@@ -5,9 +5,13 @@ import uuid
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+import statistics
+from collections import Counter
 
 import admin
 import auth
@@ -15,7 +19,15 @@ import config
 import db
 import pipeline
 import ratelimit
-from models import FoundSite, MergedReport, ReportGridItem, ReportStatus, SiteResult
+import storage
+from models import (
+    FoundSite,
+    MergedReport,
+    ReportGridItem,
+    ReportStats,
+    ReportStatus,
+    SiteResult,
+)
 
 # Schema is managed by Alembic — run `alembic upgrade head` (see README).
 app = FastAPI(title="Product Sourcing Intelligence Agent")
@@ -74,6 +86,31 @@ async def upload_image(
     return {"id": report.id, "status": report.status}
 
 
+def _compute_stats(report: db.Report) -> ReportStats:
+    sites = report.sites or []
+    prices = [s["price_value"] for s in sites if s.get("price_value") is not None]
+    ratings = [s["rating_value"] for s in sites if s.get("rating_value") is not None]
+    currencies = [s["currency"] for s in sites if s.get("currency")]
+
+    stats = ReportStats(
+        sites_found=len(report.listings or []),
+        sites_with_price=len(prices),
+        currency=Counter(currencies).most_common(1)[0][0] if currencies else None,
+        price_values=sorted(prices),
+        avg_rating=round(statistics.fmean(ratings), 2) if ratings else None,
+        total_reviews=sum(s["review_count"] for s in sites if s.get("review_count")),
+    )
+    if prices:
+        stats.price_min = min(prices)
+        stats.price_max = max(prices)
+        stats.price_median = round(statistics.median(prices), 2)
+        if len(prices) >= 2:
+            q1, _, q3 = statistics.quantiles(prices, n=4)  # returns 3 cut points
+            stats.price_q1 = round(q1, 2)
+            stats.price_q3 = round(q3, 2)
+    return stats
+
+
 def _to_status(report: db.Report) -> ReportStatus:
     return ReportStatus(
         id=report.id,
@@ -86,6 +123,7 @@ def _to_status(report: db.Report) -> ReportStatus:
         found_sites=[FoundSite(**s) for s in (report.listings or [])],
         sites=[SiteResult(**s) for s in (report.sites or [])],
         report=MergedReport(**report.report) if report.report else None,
+        stats=_compute_stats(report),
     )
 
 
@@ -125,3 +163,21 @@ async def get_report(
     if report is None or report.user_id != user.id:
         raise HTTPException(status_code=404, detail="Report not found.")
     return _to_status(report)
+
+
+@app.get("/reports/{report_id}/images/{site_index}/{filename}")
+async def get_report_image(
+    report_id: int,
+    site_index: int,
+    filename: str,
+    user: db.User = Depends(auth.get_current_user),
+    session: AsyncSession = Depends(db.get_session),
+):
+    """Serve a stored product image — only to the report's owner."""
+    report = await session.get(db.Report, report_id)
+    if report is None or report.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Not found.")
+    path = storage.image_path(report_id, site_index, filename)
+    if path is None:
+        raise HTTPException(status_code=404, detail="Image not found.")
+    return FileResponse(path)

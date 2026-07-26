@@ -14,6 +14,7 @@ from sqlalchemy.orm.attributes import flag_modified
 
 import config
 import services
+import storage
 from db import AsyncSessionLocal, Report
 
 
@@ -70,7 +71,12 @@ async def run(report_id: int, image_path: str) -> None:
                     "status": "pending",
                     "summary": None,
                     "description": None,
-                    "image": None,
+                    "manufacturer": None,
+                    "seller": None,
+                    "rating": None,
+                    "barcodes": [],
+                    "specs": {},
+                    "images": [],
                     "started_at": None,
                     "finished_at": None,
                 }
@@ -91,11 +97,27 @@ async def run(report_id: int, image_path: str) -> None:
 
                 try:
                     scraped = await services.scrape_listing(listing["link"])
+                    images = await _store_site_images(report_id, i, scraped.get("image_urls", []))
                     summary = await services.summarize_site(listing, scraped)
-                    sites[i]["description"] = scraped.get("description")
-                    sites[i]["image"] = (scraped.get("images") or [None])[0]
-                    sites[i]["summary"] = summary
-                    sites[i]["status"] = "done"
+                    sites[i].update(
+                        {
+                            "description": scraped.get("description"),
+                            "price": scraped.get("price") or sites[i]["price"],
+                            "price_value": scraped.get("price_value"),
+                            "currency": scraped.get("currency"),
+                            "manufacturer": scraped.get("manufacturer"),
+                            "seller": scraped.get("seller"),
+                            "rating": scraped.get("rating"),
+                            "rating_value": scraped.get("rating_value"),
+                            "review_count": scraped.get("review_count"),
+                            "reviews": scraped.get("reviews") or [],
+                            "barcodes": scraped.get("barcodes") or [],
+                            "specs": scraped.get("specs") or {},
+                            "images": images,
+                            "summary": summary,
+                            "status": "done",
+                        }
+                    )
                 except Exception as exc:  # noqa: BLE001 — one bad site shouldn't kill the run
                     sites[i]["status"] = "failed"
                     sites[i]["summary"] = f"Could not process this site ({exc})."
@@ -120,6 +142,20 @@ async def run(report_id: int, image_path: str) -> None:
     finally:
         if os.path.exists(image_path):
             os.remove(image_path)
+
+
+async def _store_site_images(report_id: int, site_index: int, urls: list) -> list:
+    """Download up to MAX_IMAGES_PER_SITE images and save them under the
+    product's folder. Returns served endpoint paths (owner-only access)."""
+    served: list = []
+    for url in urls[: config.MAX_IMAGES_PER_SITE]:
+        got = await services.fetch_image(url)
+        if not got:
+            continue
+        content, ctype = got
+        filename = storage.save_image(report_id, site_index, len(served), content, ctype)
+        served.append(f"/reports/{report_id}/images/{site_index}/{filename}")
+    return served
 
 
 async def _fail(report_id: int, message: str) -> None:

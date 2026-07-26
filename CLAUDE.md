@@ -48,6 +48,7 @@ There is no automated test suite. Exercise endpoints via `/docs`, or the fronten
 | `db.py` | Async SQLAlchemy engine, `User`/`Report` ORM models, session dependency, and Postgres-URL normalization. |
 | `pipeline.py` | The background job (`run`) — executes the pipeline and commits progress to the DB after each step. |
 | `services.py` | The external integrations (see below). Missing API keys raise `HTTPException(503)`. |
+| `storage.py` | Local per-product image storage (`storage/reports/{id}/site_{n}/…`) + path-traversal-safe resolution. Swappable for S3/R2. |
 | `models.py` | Pydantic request/response models (API contract). Distinct from the SQLAlchemy ORM models in `db.py`. |
 | `config.py` | Env-var loading (`python-dotenv`). |
 | `ratelimit.py` | slowapi limiter + the per-user/per-IP key function and 429 handler. |
@@ -74,18 +75,23 @@ There is no automated test suite. Exercise endpoints via `/docs`, or the fronten
 
 ### The report shape (`MergedReport`)
 
-`{ summary, features (list), specifications (dict), pricing_summary, recommendation }` — merged across all visited sites. Per-site data (`SiteResult`) carries its own `summary`, `price`, `description`, `image`, `status`, and timestamps.
+The merged report is framed as a **decision case for a sourcing manager**: `{ summary, features, specifications, pricing_summary, recommendation, pros (list), cons (list), customer_sentiment, manufacturer, barcodes, wholesalers }`. Per-site data (`SiteResult`) carries `summary`, `price`/`price_value`/`currency`, `description`, `manufacturer`, `seller`, `rating`/`rating_value`/`review_count`, `reviews`, `barcodes`, `specs`, `images` (served paths), `status`, timestamps. Both live inside JSON columns, so adding fields needs **no migration**.
+
+`ReportStatus.stats` (`ReportStats`) is **computed on read** in `main._compute_stats` from the site data — sites found, sites with price, price min/max/median/Q1/Q3 + raw values (for the box plot), avg rating, total reviews. The frontend renders KPI cards + an SVG box plot (`PriceChart.js`) from it.
 
 ### External services (`services.py`)
 
 Each is an isolated `async` function; all require an API key (else `503`):
 - `host_image(path)` — uploads to **imgbb**, returns a public URL. Needed because SerpApi Google Lens fetches the image **by URL**, so a local `/tmp` file must be hosted first. The returned URL is also stored as the report's uploaded image.
 - `serpapi_lens(image_url)` — **SerpApi** `engine=google_lens` on an already-hosted URL. Real thumbnails come straight from Google, so images actually render.
-- `scrape_listing(url)` — **httpx + BeautifulSoup**, best-effort (many retailers block bots/JS-render). Returns a dict with `description`/`images`/`pdf_links`/`video_links`; on any error returns an empty-ish dict.
-- `summarize_site(listing, scraped)` — small **Claude** call → a 1–2 sentence per-site summary.
-- `generate_ai_report(sites)` — **Claude** (`CLAUDE_MODEL`, default `claude-opus-4-8`) merges all site data into a `MergedReport`.
+- `scrape_listing(url)` — **httpx + BeautifulSoup**, best-effort. Parses **JSON-LD/schema.org `Product`** first (images array, brand/manufacturer, GTIN/UPC/EAN barcodes, offer price + seller, rating, `additionalProperty` specs) with Open Graph / meta / `<img>` fallbacks. Returns `title`/`description`/`price`/`manufacturer`/`seller`/`rating`/`barcodes`/`specs`/`image_urls`. Anti-bot/JS sites (Amazon) still yield less without a scraping API.
+- `fetch_image(url)` — downloads one image (skips non-images/tiny icons) for storage.
+- `summarize_site(listing, scraped)` — small **Claude** call → a 2–3 sentence per-site summary over the rich data.
+- `generate_ai_report(sites)` — **Claude** (`CLAUDE_MODEL`, default `claude-opus-4-8`) merges all site data into a `MergedReport` (adds merged `manufacturer`/`barcodes`/`wholesalers`).
 
-Thresholds are all env-configurable: `MAX_FOUND_SITES` (sites recorded), `MAX_LISTINGS` (sites visited), `MAX_IMAGES`, `SCRAPE_TIMEOUT_SECONDS`.
+**Image storage:** the pipeline downloads up to `MAX_IMAGES_PER_SITE` images per site via `fetch_image`, saves them under `storage/reports/{id}/site_{n}/` (`storage.py`), and records **served endpoint paths** (`/reports/{id}/images/{n}/{file}`) on the site result — never public URLs. `GET /reports/{id}/images/{site}/{file}` serves them **only to the report's owner** (auth cookie + ownership check); `storage.image_path` rejects path traversal. The `storage/` dir is gitignored. For production, swap `storage.py` for S3/R2 + presigned URLs.
+
+Thresholds are all env-configurable: `MAX_FOUND_SITES`, `MAX_LISTINGS`, `MAX_IMAGES`, `MAX_IMAGES_PER_SITE`, `SCRAPE_TIMEOUT_SECONDS`, `STORAGE_DIR`.
 
 ### Access model: invite-only
 

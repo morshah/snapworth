@@ -40,12 +40,20 @@ IMGBB_API_KEY = os.getenv("IMGBB_API_KEY")
 # Report synthesis — Anthropic Claude. https://console.anthropic.com
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-opus-4-8")
+# Max output tokens for the final merged report. Raise for spec-heavy products
+# if the report gets truncated ("came back incomplete").
+REPORT_MAX_TOKENS = int(os.getenv("REPORT_MAX_TOKENS", "8000"))
 
 # Tunables (pipeline thresholds)
-MAX_FOUND_SITES = int(os.getenv("MAX_FOUND_SITES", "30"))   # sites recorded from search
-MAX_LISTINGS = int(os.getenv("MAX_LISTINGS", "5"))          # sites actually visited/scraped
-MAX_IMAGES = int(os.getenv("MAX_IMAGES", "12"))             # images aggregated into a report
+MAX_FOUND_SITES = int(os.getenv("MAX_FOUND_SITES", "30"))         # sites recorded from search
+MAX_LISTINGS = int(os.getenv("MAX_LISTINGS", "5"))               # sites actually visited/scraped
+MAX_IMAGES = int(os.getenv("MAX_IMAGES", "12"))                  # images aggregated into a report
+MAX_IMAGES_PER_SITE = int(os.getenv("MAX_IMAGES_PER_SITE", "8")) # images downloaded per site
 SCRAPE_TIMEOUT_SECONDS = float(os.getenv("SCRAPE_TIMEOUT_SECONDS", "8"))
+
+# Image storage — downloaded product images are saved on disk under per-product
+# folders and served only through an ownership-checked endpoint (never public).
+STORAGE_DIR = os.getenv("STORAGE_DIR") or os.path.join(os.path.dirname(__file__), "storage")
 
 # Rate limiting (slowapi). Storage defaults to in-memory (per-process); set a
 # shared backend (e.g. redis://host:6379) for multi-instance deployments.

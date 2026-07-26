@@ -23,6 +23,9 @@ __pycache__/
 # SQLite auth database (contains user credentials — never commit)
 *.db
 
+# Downloaded product images (per-user data — never commit)
+storage/
+
 # Next.js / Node.js
 node_modules/
 # Next.js build output

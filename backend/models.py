@@ -9,13 +9,25 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 
+class Review(BaseModel):
+    author: Optional[str] = None
+    rating: Optional[str] = None
+    body: Optional[str] = None
+
+
 class MergedReport(BaseModel):
-    """The final product report, merged across all visited sites."""
+    """The final product report — a decision case for a sourcing manager."""
     summary: str
     features: List[str]
     specifications: Dict[str, Any]
     pricing_summary: str
     recommendation: str
+    pros: List[str] = []
+    cons: List[str] = []
+    customer_sentiment: Optional[str] = None
+    manufacturer: Optional[str] = None
+    barcodes: List[str] = []
+    wholesalers: List[str] = []
 
 
 class FoundSite(BaseModel):
@@ -37,10 +49,35 @@ class SiteResult(BaseModel):
     status: str = "pending"  # pending | visiting | done | failed
     summary: Optional[str] = None
     price: Optional[str] = None
+    price_value: Optional[float] = None
+    currency: Optional[str] = None
     description: Optional[str] = None
-    image: Optional[str] = None
+    manufacturer: Optional[str] = None
+    seller: Optional[str] = None
+    rating: Optional[str] = None
+    rating_value: Optional[float] = None
+    review_count: Optional[int] = None
+    reviews: List[Review] = []
+    barcodes: List[str] = []
+    specs: Dict[str, Any] = {}
+    images: List[str] = []             # served image endpoint paths
     started_at: Optional[str] = None   # ISO strings (stored inside JSON)
     finished_at: Optional[str] = None
+
+
+class ReportStats(BaseModel):
+    """Aggregate decision signals computed from the visited sites."""
+    sites_found: int = 0
+    sites_with_price: int = 0
+    currency: Optional[str] = None
+    price_min: Optional[float] = None
+    price_max: Optional[float] = None
+    price_median: Optional[float] = None
+    price_q1: Optional[float] = None
+    price_q3: Optional[float] = None
+    price_values: List[float] = []
+    avg_rating: Optional[float] = None
+    total_reviews: int = 0
 
 
 class ReportStatus(BaseModel):
@@ -55,6 +92,7 @@ class ReportStatus(BaseModel):
     found_sites: List[FoundSite] = []
     sites: List[SiteResult] = []
     report: Optional[MergedReport] = None
+    stats: ReportStats = ReportStats()
 
 
 class ReportGridItem(BaseModel):
